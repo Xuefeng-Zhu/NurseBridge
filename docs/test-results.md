@@ -1,0 +1,56 @@
+# Test results
+
+Verified locally on 2026-09-21 against the Voice Agent implementation. No public deployment, stored-agent creation, or paid-provider inference was performed.
+
+## Executed checks
+
+| Check | Result |
+| --- | --- |
+| Pinned install and `pnpm peers check` | Pass; no peer conflicts at baseline installation |
+| Local D1 migrations and seed | Pass |
+| `pnpm bindings` | Generated both Workers' binding/runtime types |
+| `pnpm typecheck` | Pass across all six workspace packages |
+| `pnpm lint` | Pass |
+| `pnpm test` | 60 tests pass |
+| `pnpm test:voice-agent-setup` | 4 tests pass; all provider requests mocked |
+| `pnpm test:workers` | 90 tests pass in the Workers runtime |
+| `pnpm build` | Next.js 16.3.5 and OpenNext Worker bundle pass |
+| Realtime `wrangler deploy --dry-run` | Pass; bundle generated, nothing deployed |
+| `PLAYWRIGHT_CHANNEL=chrome pnpm test:browser` | 5 tests pass in 13.0 seconds |
+
+Browser tests run against OpenNext Workers preview at localhost:8787 and the realtime Worker at localhost:8788. Both execute in one shared local runtime through the preview gateway/proxy, preserving separate Worker code and deployment. They use installed Chrome because the pinned Playwright browser download is absent. A fresh machine can instead run `pnpm exec playwright install chromium`. Screenshots are inspected at desktop 1440×1050 and mobile 390×844. The nurse workspace switches to a single panel on narrow screens. Assertions cover horizontal overflow, uncaught page errors and unexpected browser console errors in the two-browser audio flow. The initial unauthenticated session probe is expected to return 401 before workspace creation.
+
+The suite covers isolated workspaces and invitations, queue creation before consent, correction revisions, exact evidence, one clarification followed by unresolved waiting, ordinary completed waiting, refusal without changing arrival, cross-workspace restrictions, CSRF, role restrictions, template versions, authorized exports and terminal deletion. Waiting leaves the browser session available; a repeated intake-consent command is rejected after automation stops. The completed-intake test injects one temporary session-read failure and verifies the nurse workspace recovers without creating a new workspace. Unit tests verify the read retry limit and that mutations/authentication failures are never retried.
+
+Workers tests exercise real local Durable Objects, SQLite and D1: claim races, command receipts, replayed tickets, eviction recovery, alarms, binary relay, exact playback-flush acknowledgment, readiness-before-claim reconciliation, dropped-frame rejection, both-direction playback proof, nurse disconnect, ten-minute call bounds, seven-day retention, ordered projections and deletion fences. Voice Agent tests use the production adapter with synthetic protocol events, including a Workers WebSocketPair upgrade. They cover configuration echoes, transcript replacement/deduplication, separate assistant evidence, tool authority and receipts, tool completion ordering, odd PCM bytes, interruption without speech-start events, stale audio rejection, provider cleanup retries, and closure before a provider session ID arrives. Nebius requests, bounded schema repair and error sanitization remain covered. Legacy standalone STT/TTS utility tests remain; those utilities are no longer the active pipeline.
+
+## Measured fixture audio — not live provider performance
+
+The two-browser test launches separate Chromium processes with distinct 440 Hz caller and 660 Hz nurse microphone files. Actual capture, 24 kHz resampling, WebSocket transport and receiving AudioWorklets run in both directions. The test initiates takeover while the 220 Hz mock agent cue is playing and checks zero agent samples in the new media epoch after flushing.
+
+| Measurement | Final local fixture result |
+| --- | --- |
+| Caller received nurse microphone | 658.24 Hz estimated, 660 Hz source |
+| Nurse received caller microphone | 438.83 Hz estimated, 440 Hz source |
+| Agent samples after takeover epoch | 0 in both browsers |
+| Human samples consumed after takeover | Caller 40,192; nurse 41,216 |
+| Dropped frames / underruns | 0 / 0 in both captured proofs |
+| Handoff through both playback acknowledgments | 171 ms |
+| Mock extraction | 0 ms at millisecond clock resolution |
+| Mock first audio ready / first playback | 1 ms / 100 ms |
+
+The final run had no unexpected browser console errors, uncaught page errors or horizontal overflow in the two-browser audio flow. Fixture timings are one local observation, not targets, live latency guarantees, recognition accuracy or clinical evidence. The mock cue is a tone with text captions, not synthesized speech. No live transcription timing is reported.
+
+Generated evidence is ignored by Git: [audio proof](../output/playwright/results/acceptance-visible-intake--f0397--distinct-human-microphones/audio-proof.json), [browser report](../output/playwright/report/index.html), and desktop/mobile screenshots in the same test-result directory. Tests regenerate these artifacts.
+
+## Limits and remaining acceptance
+
+Repeated browser runs reached the built-in 30-session/hour limit. Only the exhausted local synthetic-test counter was reset; sessions, case content and production limits were preserved. Browser verification also exposed a missing favicon and a transient session-read failure that previously appeared as lost authentication; these were corrected. Arrival and call deadline now use the same timestamp. Concurrent standalone emulators also produced D1 internal errors, so the local runner now uses one shared multi-Worker runtime.
+
+The default runtime is explicit mock mode. Deterministic tests require no provider credentials and the browser suite refuses live mode before enabling synthetic microphones. Local credential presence is not live-provider verification. Mock intake uses the same collection and server tool checks, while supplying synthetic finalized transcripts and tone playback.
+
+Live activation remains blocked pending actual AssemblyAI Voice Agent and Nemotron streaming/tool compatibility, independent live extraction, and supported account recording-retention controls. The documented provider DELETE is soft deletion; mocked DELETE tests do not prove physical erasure or backup expiry. A connection failure before a session ID arrives may require manual provider-history reconciliation. See [Voice Agent integration](voice-agent.md).
+
+Also pending: physical two-device audibility, echo, permissions, autoplay, interruption and constrained-network behavior; live transcription/extraction/first-audio/handoff timings; remote D1/R2/Access/Turnstile; staging/public deployment; and hackathon publishing materials. The [manual checklist](demo-script.md#manual-two-device-checks) is separate from fixture evidence. No clinical use, symptom-based emergency detection or telephony capability is claimed.
+
+Retention and call-duration alarms are exercised with time controls, not a seven-day wall-clock run. Application deletion fences and provider soft deletion are distinct. WebSocket audio remains subject to TCP head-of-line blocking. No real patient data was used.

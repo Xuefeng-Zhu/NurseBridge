@@ -1,0 +1,2 @@
+import tseslint from 'typescript-eslint';
+export default tseslint.config({ignores:['**/node_modules/**','**/.next/**','**/.open-next/**','**/.wrangler/**','**/.pnpm-store/**','output/**','**/dist/**','**/worker-configuration.d.ts','**/public/worklets/**','**/next-env.d.ts']}, ...tseslint.configs.recommended, {rules:{'@typescript-eslint/no-explicit-any':'off','@typescript-eslint/no-unused-vars':['warn',{argsIgnorePattern:'^_',varsIgnorePattern:'^_'}]}});

@@ -1,0 +1,19 @@
+{
+  "name": "@nursebridge/audio-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./protocol": "./src/protocol.ts"
+  },
+  "scripts": {
+    "build": "node scripts/build-worklets.mjs",
+    "build-worklets": "node scripts/build-worklets.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}

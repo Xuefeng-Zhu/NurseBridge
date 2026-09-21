@@ -1,0 +1,35 @@
+{
+  "name": "@nursebridge/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "preview": "wrangler dev --port 8787 --inspector-port 9230 --persist-to ../../.local/state",
+    "typecheck": "tsc --noEmit",
+    "bindings": "wrangler types worker-configuration.d.ts",
+    "build:worker": "opennextjs-cloudflare build"
+  },
+  "dependencies": {
+    "next": "16.3.5",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "@opennextjs/cloudflare": "1.20.6",
+    "@nursebridge/contracts": "workspace:*",
+    "@nursebridge/intake-policy": "workspace:*",
+    "@nursebridge/database": "workspace:*",
+    "@nursebridge/audio-client": "workspace:*",
+    "@fontsource/source-sans-3": "5.2.8",
+    "jose": "6.1.2",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "wrangler": "4.135.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "tailwindcss": "4.3.3",
+    "@tailwindcss/postcss": "4.3.3",
+    "@cloudflare/workers-types": "5.20260918.1"
+  }
+}

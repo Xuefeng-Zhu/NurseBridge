@@ -1,0 +1,7 @@
+# Local mock mode requires no paid credentials. Never commit .dev.vars.
+# Optional Turnstile. Required token is supplied by the demo form when configured.
+# TURNSTILE_SECRET_KEY=
+# TURNSTILE_SITE_KEY=
+# Optional staff Access application (hostname-based; issuer must be HTTPS).
+# ACCESS_ISSUER=https://YOUR-TEAM.cloudflareaccess.com
+# ACCESS_AUDIENCE=

@@ -1,0 +1,11 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "nursebridge-local-gateway",
+  "main": "gateway.mjs",
+  "compatibility_date": "2026-09-18",
+  "services": [
+    { "binding": "WEB", "service": "nursebridge-web" },
+    { "binding": "REALTIME", "service": "nursebridge-realtime" }
+  ],
+  "observability": { "enabled": false }
+}

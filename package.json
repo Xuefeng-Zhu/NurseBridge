@@ -1,0 +1,38 @@
+{
+  "name": "nursebridge",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=24.14.1"
+  },
+  "scripts": {
+    "setup": "pnpm install && pnpm db:migrate && pnpm db:seed",
+    "db:migrate": "pnpm --filter @nursebridge/web exec wrangler d1 migrations apply DB --local --persist-to ../../.local/state",
+    "db:seed": "pnpm --filter @nursebridge/web exec wrangler d1 execute DB --local --persist-to ../../.local/state --file ../../packages/database/seed.sql",
+    "dev": "node scripts/dev.mjs",
+    "dev:next": "pnpm --filter @nursebridge/web dev",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "build": "pnpm --filter @nursebridge/audio-client build && pnpm --filter @nursebridge/web build:worker",
+    "preview": "node scripts/dev.mjs --preview",
+    "bindings": "pnpm --filter @nursebridge/web bindings && pnpm --filter @nursebridge/realtime bindings",
+    "deploy": "node scripts/deploy.mjs",
+    "test:workers": "vitest run --config apps/realtime/vitest.config.ts",
+    "setup:voice-agent": "node scripts/setup-voice-agent.mjs",
+    "test:voice-agent-setup": "node --test scripts/setup-voice-agent.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "4.1.4",
+    "@playwright/test": "1.60.0",
+    "@cloudflare/vitest-plugin": "1.1.13",
+    "eslint": "9.39.1",
+    "typescript-eslint": "8.46.2",
+    "@types/node": "24.10.0",
+    "esbuild": "0.28.1"
+  },
+  "type": "module"
+}

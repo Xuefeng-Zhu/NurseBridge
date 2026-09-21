@@ -1,0 +1,96 @@
+{
+  "name": "nursebridge-web",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-09-18",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": false
+  },
+  "vars": {
+    "APP_ORIGIN": "http://localhost:8787",
+    "REALTIME_URL": "ws://localhost:8788",
+    "PROVIDER_MODE": "mock",
+    "ALLOW_TEST_DIAGNOSTICS": "true",
+    "MAX_ACTIVE_CALLS_PER_WORKSPACE": "2",
+    "MAX_LIVE_CONCURRENCY": "4",
+    "DAILY_AUDIO_MINUTES": "120"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nursebridge-local",
+      "database_id": "00000000-0000-0000-0000-000000000001",
+      "migrations_dir": "../../packages/database/migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "EXPORTS",
+      "bucket_name": "nursebridge-exports-local"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CALL_SESSIONS",
+        "class_name": "CallSession",
+        "script_name": "nursebridge-realtime"
+      }
+    ]
+  },
+  "env": {
+    "staging": {
+      "name": "nursebridge-web-staging",
+      "vars": {
+        "APP_ORIGIN": "https://REPLACE-WEB.workers.dev",
+        "REALTIME_URL": "wss://REPLACE-REALTIME.workers.dev",
+        "PROVIDER_MODE": "live",
+        "ALLOW_TEST_DIAGNOSTICS": "false",
+        "MAX_ACTIVE_CALLS_PER_WORKSPACE": "2",
+        "MAX_LIVE_CONCURRENCY": "4",
+        "DAILY_AUDIO_MINUTES": "120"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "nursebridge-staging",
+          "database_id": "REPLACE_D1_ID",
+          "migrations_dir": "../../packages/database/migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "EXPORTS",
+          "bucket_name": "nursebridge-exports-staging"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CALL_SESSIONS",
+            "class_name": "CallSession",
+            "script_name": "nursebridge-realtime-staging"
+          }
+        ]
+      },
+      "services": [
+        {
+          "binding": "REALTIME",
+          "service": "nursebridge-realtime-staging"
+        }
+      ]
+    }
+  },
+  "services": [
+    {
+      "binding": "REALTIME",
+      "service": "nursebridge-realtime"
+    }
+  ]
+}

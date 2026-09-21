@@ -1,0 +1,8 @@
+# Explicit mock mode; live activation stays blocked until recording controls exist.
+PROVIDER_MODE=mock
+ASSEMBLYAI_API_KEY=
+NEBIUS_API_KEY=
+VOICE_AGENT_ID=
+VOICE_AGENT_VERSION=
+VOICE_AGENT_COMPATIBILITY_VERIFIED=false
+ALLOWED_ORIGINS=http://localhost:8787,http://127.0.0.1:8787,http://localhost:3000,http://127.0.0.1:3000

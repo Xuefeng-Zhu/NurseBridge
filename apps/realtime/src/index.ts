@@ -1,0 +1,36 @@
+import type { Env } from './env';
+import { DEFAULT_EXTRACTION_MODEL } from './providers/nebius';
+import { RECORDING_DISCLOSURE_VERSION } from '@nursebridge/contracts';
+import { liveActivationIssues, RECORDING_CONTROLS_VERIFIED } from './providers/readiness';
+export { CallSession } from './CallSession';
+
+export function providerHealth(env: Env) {
+  const voiceAgent = Boolean(env.ASSEMBLYAI_API_KEY?.trim() && env.VOICE_AGENT_ID?.trim() && env.VOICE_AGENT_VERSION?.trim());
+  const extraction = Boolean(env.NEBIUS_API_KEY?.trim());
+  const activationIssues = liveActivationIssues(env);
+  return {
+    service: 'NurseBridge realtime', mode: env.PROVIDER_MODE,
+    configured: env.PROVIDER_MODE === 'mock' || voiceAgent && extraction,
+    intakeConfigured: env.PROVIDER_MODE === 'mock' || activationIssues.length === 0,
+    liveActivation: { ready: activationIssues.length === 0, issues: activationIssues },
+    recording: { provider: 'assemblyai', enabled: env.PROVIDER_MODE === 'live', disclosureVersion: RECORDING_DISCLOSURE_VERSION, retentionVerified: RECORDING_CONTROLS_VERIFIED, deletionVerified: RECORDING_CONTROLS_VERIFIED },
+    providers: {
+      voiceAgent: { provider: 'assemblyai-voice-agent', configured: voiceAgent, verified: false },
+      extraction: { provider: 'nebius', model: env.EXTRACTION_MODEL ?? DEFAULT_EXTRACTION_MODEL, configured: extraction, verified: false },
+    },
+  };
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === '/health') return Response.json(providerHealth(env), { headers: { 'Cache-Control': 'no-store' } });
+    const match = /^\/connect\/([a-zA-Z0-9_-]{8,100})$/.exec(url.pathname);
+    if (!match || request.method !== 'GET') return new Response('Not found', { status: 404 });
+    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('WebSocket required', { status: 426 });
+    if (!env.ALLOWED_ORIGINS.split(',').map(value => value.trim()).includes(request.headers.get('Origin') ?? '')) return new Response('Origin not allowed', { status: 403 });
+    // Call identifiers route requests only; they confer no authority. No case data is
+    // returned until the target object atomically consumes a one-time ticket.
+    return env.CALL_SESSIONS.get(env.CALL_SESSIONS.idFromName(match[1]!)).fetch(request);
+  }
+} satisfies ExportedHandler<Env>;
