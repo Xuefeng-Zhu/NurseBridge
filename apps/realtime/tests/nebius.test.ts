@@ -20,10 +20,12 @@ describe('Nebius structured extraction', () => {
     expect(url).toBe(NEBIUS_CHAT_URL);
     expect(url).not.toContain(key);
     expect(new Headers(init.headers).get('Authorization')).toBe(`Bearer ${key}`);
-    expect(init).toMatchObject({ method: 'POST', redirect: 'error' });
+    expect(init).toMatchObject({ method: 'POST', redirect: 'manual' });
     expect(init.signal).toBeInstanceOf(AbortSignal);
     const body = JSON.parse(String(init.body));
-    expect(body).toMatchObject({ model: DEFAULT_EXTRACTION_MODEL, max_tokens: 1800, n: 1, stream: false, store: false, response_format: { type: 'json_schema', json_schema: { name: 'nursebridge_intake', strict: true, schema: { type: 'object', additionalProperties: false } } } });
+    expect(body).toMatchObject({ model: DEFAULT_EXTRACTION_MODEL, max_tokens: 1800, n: 1, stream: false, store: false, chat_template_kwargs: { enable_thinking: false }, response_format: { type: 'json_schema', json_schema: { name: 'nursebridge_intake', strict: true, schema: { type: 'object', additionalProperties: false } } } });
+    expect(body.response_format.json_schema.schema.properties.facts.items.properties.status.enum).not.toContain('not_asked');
+    expect(body.messages[0].content).toContain('Omit fields the caller has not answered from facts');
     expect(body.messages[1].content).toBe(JSON.stringify(input));
     expect(body.tools).toBeUndefined();
     expect(body).not.toHaveProperty('audio');
@@ -37,6 +39,12 @@ describe('Nebius structured extraction', () => {
     expect(invalid).toHaveBeenCalledTimes(2);
     const retryBody = JSON.parse(String(invalid.mock.calls[1]![1].body));
     expect(retryBody.messages[0].content).toContain('previous response failed local schema validation');
+  });
+  it('repairs a provider response that proposes an unasked field as a fact', async () => {
+    const unasked = { ...extracted, facts: [{ ...extracted.facts[0], status: 'not_asked' }] };
+    const request = vi.fn<ProviderFetch>().mockResolvedValueOnce(completion(unasked)).mockResolvedValueOnce(completion());
+    await expect(extract({ apiKey: key }, { turns: [turn] }, request)).resolves.toEqual(extracted);
+    expect(request).toHaveBeenCalledTimes(2);
   });
   it('accepts the provider response contract when tool_calls is explicitly null', async () => {
     await expect(extract({ apiKey: key }, {}, async () => completion(extracted, 'stop', null, null))).resolves.toEqual(extracted);
@@ -56,7 +64,31 @@ describe('Nebius structured extraction', () => {
     const result = await extract({ apiKey: key }, {}, async () => completion(invented));
     expect(() => validateExtraction(result, [turn], DEFAULT_TEMPLATE)).toThrow();
   });
-  it.each([400, 401, 429, 503])('sanitizes HTTP %s without retrying or downgrading structured output', async status => {
+  it('repairs unsupported wording once through the exact evidence policy', async () => {
+    const invented = { ...extracted, facts: [{ ...extracted.facts[0], rawWording: 'started on yesterday' }] };
+    const request = vi.fn<ProviderFetch>().mockResolvedValueOnce(completion(invented)).mockResolvedValueOnce(completion(extracted));
+    const result = await extract({ apiKey: key, validate: candidate => validateExtraction(candidate, [turn], DEFAULT_TEMPLATE) }, { turns: [turn] }, request);
+    expect(result).toEqual(extracted);
+    expect(request).toHaveBeenCalledTimes(2);
+    const retry = JSON.parse(String(request.mock.calls[1]![1].body));
+    expect(retry.messages[0].content).toContain('failed local evidence-policy validation');
+    expect(retry.messages[0].content).toContain('rawWording and value must be exact substrings');
+    expect(retry.messages[0].content).not.toContain('Raw wording is unsupported');
+    expect(retry.messages[0].content).not.toContain(key);
+  });
+  it('rejects unsupported evidence after exactly one repair without leaking policy exceptions', async () => {
+    const invented = { ...extracted, facts: [{ ...extracted.facts[0], value: 'today' }] };
+    const request = vi.fn<ProviderFetch>(async () => completion(invented));
+    await expect(extract({ apiKey: key, validate: candidate => validateExtraction(candidate, [turn], DEFAULT_TEMPLATE) }, { turns: [turn] }, request)).rejects.toThrow('Nebius extraction failed evidence validation.');
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+  it('shares one repair budget between structural and evidence failures', async () => {
+    const invented = { ...extracted, facts: [{ ...extracted.facts[0], value: 'today' }] };
+    const request = vi.fn<ProviderFetch>().mockResolvedValueOnce(completion('not JSON')).mockResolvedValueOnce(completion(invented));
+    await expect(extract({ apiKey: key, validate: candidate => validateExtraction(candidate, [turn], DEFAULT_TEMPLATE) }, { turns: [turn] }, request)).rejects.toThrow('Nebius extraction failed evidence validation.');
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+  it.each([302, 400, 401, 429, 503])('sanitizes HTTP %s without retrying or downgrading structured output', async status => {
     const request = vi.fn<ProviderFetch>(async () => new Response(`secret ${key} ${turn.text}`, { status }));
     await expect(extract({ apiKey: key }, {}, request)).rejects.toThrow(`Nebius extraction unavailable (HTTP ${status}).`);
     expect(request).toHaveBeenCalledOnce();
@@ -91,6 +123,14 @@ describe('Nebius structured extraction', () => {
 });
 
 describe('Voice Agent activation is separate from configured credentials', () => {
+  const configuredLive = {
+    PROVIDER_MODE: 'live',
+    ASSEMBLYAI_API_KEY: 'test',
+    NEBIUS_API_KEY: key,
+    VOICE_AGENT_ID: 'agent-test',
+    VOICE_AGENT_VERSION: 'v1',
+    ALLOWED_ORIGINS: 'http://localhost:8787,http://127.0.0.1:3000',
+  } as const;
   it('keeps live activation blocked until the versioned agent and recording controls are verified', () => {
     const health = providerHealth({ PROVIDER_MODE: 'live', ASSEMBLYAI_API_KEY: 'stt-test', NEBIUS_API_KEY: key } as Env);
     expect(health).toMatchObject({ configured: false, intakeConfigured: false, providers: { extraction: { provider: 'nebius', configured: true, verified: false }, voiceAgent: { provider: 'assemblyai-voice-agent', configured: false, verified: false } } });
@@ -100,5 +140,36 @@ describe('Voice Agent activation is separate from configured credentials', () =>
   it('does not confuse configured credentials with runtime verification or recording retention', () => {
     const health = providerHealth({ PROVIDER_MODE: 'live', ASSEMBLYAI_API_KEY: 'test', NEBIUS_API_KEY: key, VOICE_AGENT_ID: 'agent-test', VOICE_AGENT_VERSION:'v1', VOICE_AGENT_COMPATIBILITY_VERIFIED:'true' } as Env);
     expect(health).toMatchObject({ configured: true, intakeConfigured: false, liveActivation:{ready:false,issues:['provider_recording_controls_unverified']} });
+  });
+  it('allows only a named fictional loopback test while reporting recording and deletion as unverified', () => {
+    const health = providerHealth({ ...configuredLive, FICTIONAL_LIVE_TEST: 'true' } as Env);
+    expect(health).toMatchObject({
+      configured: true,
+      intakeConfigured: true,
+      liveActivation: { ready: true, issues: [] },
+      recording: { enabled: true, retentionVerified: false, deletionVerified: false },
+      providers: { voiceAgent: { verified: false }, extraction: { verified: false } },
+    });
+  });
+  it.each([
+    ['missing flag', undefined, configuredLive.ALLOWED_ORIGINS],
+    ['non-loopback host', 'true', 'https://nursebridge.example'],
+    ['mixed origins', 'true', 'http://localhost:8787,https://nursebridge.example'],
+    ['empty origin', 'true', 'http://localhost:8787,'],
+    ['origin with path', 'true', 'http://localhost:8787/case'],
+    ['localhost over HTTPS', 'true', 'https://localhost:8787'],
+    ['loopback alias', 'true', 'http://127.1:8787'],
+  ])('does not bypass activation for %s', (_label, flag, origins) => {
+    const health = providerHealth({ ...configuredLive, FICTIONAL_LIVE_TEST: flag, ALLOWED_ORIGINS: origins } as Env);
+    expect(health.liveActivation).toMatchObject({ ready: false, issues: ['nemotron_voice_compatibility_unverified', 'provider_recording_controls_unverified'] });
+    expect(health.recording).toMatchObject({ retentionVerified: false, deletionVerified: false });
+  });
+  it('keeps credentials and a versioned agent mandatory for fictional local testing', () => {
+    const health = providerHealth({ ...configuredLive, ASSEMBLYAI_API_KEY: '', VOICE_AGENT_ID: '', FICTIONAL_LIVE_TEST: 'true' } as Env);
+    expect(health.liveActivation).toMatchObject({ ready: false, issues: ['assemblyai_key_missing', 'versioned_agent_missing'] });
+  });
+  it('does not treat the opt-in as active while the Worker is in mock mode', () => {
+    const health = providerHealth({ ...configuredLive, PROVIDER_MODE: 'mock', FICTIONAL_LIVE_TEST: 'true' } as Env);
+    expect(health.liveActivation).toMatchObject({ ready: false, issues: ['nemotron_voice_compatibility_unverified', 'provider_recording_controls_unverified'] });
   });
 });

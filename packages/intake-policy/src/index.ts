@@ -13,8 +13,6 @@ export function validateExtraction(value: unknown, turns: TranscriptTurn[], temp
     const result = ExtractionSchema.parse(value);
     const byId = new Map(turns.filter(t => t.final).map(t => [t.id, t]));
     for (const fact of result.facts) {
-        if (fact.status === 'not_asked')
-            throw new Error('An extracted statement cannot be not asked');
         if (!template.questions.some(q => q.field === fact.field))
             throw new Error('Field outside template');
         for (const e of fact.evidence)

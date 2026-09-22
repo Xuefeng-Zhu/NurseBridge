@@ -1,0 +1,38 @@
+{
+  "finalizedCallerTurns": 1,
+  "evidenceLinkedFacts": 1,
+  "assistantTurns": 2,
+  "speechStartToFinalTranscriptMs": 1302,
+  "timings": {
+    "firstAudioReadyMs": 15,
+    "firstAudioPlaybackMs": 30,
+    "extractionMs": 1280,
+    "handoffMs": 179
+  },
+  "callerAudio": {
+    "receivedFrames": 1711,
+    "playedSamples": 822528,
+    "rms": 0.08445307049903882,
+    "underruns": 2,
+    "droppedFrames": 0,
+    "queuedSamples": 2368,
+    "dominantFrequency": 656.25,
+    "zeroCrossings": 98,
+    "controlEpoch": 2,
+    "agentSamplesInEpoch": 0,
+    "humanSamplesInEpoch": 7168
+  },
+  "nurseAudio": {
+    "receivedFrames": 3,
+    "playedSamples": 2816,
+    "rms": 0.08990747064052439,
+    "underruns": 0,
+    "droppedFrames": 0,
+    "queuedSamples": 4320,
+    "dominantFrequency": 443.1818181818182,
+    "zeroCrossings": 26,
+    "controlEpoch": 2,
+    "agentSamplesInEpoch": 0,
+    "humanSamplesInEpoch": 2816
+  }
+}

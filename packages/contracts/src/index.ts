@@ -10,11 +10,14 @@ export const FieldSchema = z.enum(['reason', 'onset', 'location', 'severity', 's
 export type FieldId = z.infer<typeof FieldSchema>;
 export const FactStatusSchema = z.enum(['not_asked', 'unknown', 'not_measured', 'denied', 'reported', 'uncertain']);
 export type FactStatus = z.infer<typeof FactStatusSchema>;
+export const ProposedFactStatusSchema = FactStatusSchema.exclude(['not_asked']);
+export type ProposedFactStatus = z.infer<typeof ProposedFactStatusSchema>;
 export const EvidenceSchema = z.object({ turnId: z.string(), quote: z.string().min(1).max(4000) });
 export type Evidence = z.infer<typeof EvidenceSchema>;
-export const ProposedFactSchema = z.object({ field: FieldSchema, value: z.string().max(4000), rawWording: z.string().max(4000), status: FactStatusSchema, evidence: z.array(EvidenceSchema).min(1).max(8) });
+export const ProposedFactSchema = z.object({ field: FieldSchema, value: z.string().max(4000), rawWording: z.string().max(4000), status: ProposedFactStatusSchema, evidence: z.array(EvidenceSchema).min(1).max(8) });
 export type ProposedFact = z.infer<typeof ProposedFactSchema>;
-export interface IntakeFact extends ProposedFact {
+export interface IntakeFact extends Omit<ProposedFact, 'status'> {
+    status: FactStatus;
     revision: number;
     nurseReviewed: boolean;
     patientConfirmed: boolean;

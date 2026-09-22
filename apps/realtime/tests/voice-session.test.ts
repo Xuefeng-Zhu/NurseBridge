@@ -10,7 +10,7 @@ import schema from '../../../packages/database/migrations/0001_initial.sql?raw';
 
 const bindings = env as unknown as Env;
 type Stub = ReturnType<Env['CALL_SESSIONS']['getByName']>;
-type ReplyState = { epoch: number; generation: number; responseId: number; startedAt: number; playbackMeasured: boolean };
+type ReplyState = { epoch: number; generation: number; responseId: number; startedAt: number; playbackMeasured: boolean; audioReadyMeasured?: boolean };
 type Internal = {
   env: Env;
   state: CallState;
@@ -28,6 +28,7 @@ type Internal = {
   eraseContent(): Promise<void>;
   finishVoiceReply(replyId: string, status: 'completed' | 'interrupted'): Promise<void>;
   enqueueVoiceAudio(pcm: Uint8Array, replyId: string): void;
+  drainVoiceAudio(): Promise<void>;
 };
 
 beforeEach(async () => { await bindings.DB.exec(schema); });
@@ -252,6 +253,23 @@ describe('Durable Voice Agent tool authority', () => {
 });
 
 describe('Voice provider recovery and deletion', () => {
+  it('records first voice audio once per reply even when the provider sends many chunks', async () => {
+    const { stub } = await create();
+    await stub.command(command('consent', { accepted: true }));
+    await runInDurableObject(stub, async instance => {
+      const internal = instance as unknown as Internal;
+      const before = internal.state.revision;
+      const reply: ReplyState = { epoch: internal.state.controlEpoch, generation: internal.state.responseGeneration, responseId: 81, startedAt: Date.now(), playbackMeasured: false, audioReadyMeasured: false };
+      internal.voiceReplies.set('chunked-reply', reply);
+      internal.voiceQueue.push({ pcm: new Uint8Array(2400), replyId: 'chunked-reply' }, { pcm: new Uint8Array(2400), replyId: 'chunked-reply' });
+      internal.voiceQueueBytes = 4800;
+      await internal.drainVoiceAudio();
+      expect(internal.state.revision).toBe(before + 1);
+      expect(reply.audioReadyMeasured).toBe(true);
+      expect(internal.voiceQueue).toHaveLength(0);
+    });
+  });
+
   it('flushes playback on interrupted reply completion even without an earlier speech-started event', async () => {
     const { stub, callId } = await create();
     const socket = await connectCaller(stub, callId);

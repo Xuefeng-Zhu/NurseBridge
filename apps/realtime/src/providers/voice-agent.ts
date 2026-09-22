@@ -41,11 +41,25 @@ function canonical(value: unknown, depth = 0): string {
   if (object(value)) return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key], depth + 1)}`).join(',')}}`;
   return JSON.stringify(value) ?? 'null';
 }
+function normalizedParameterSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizedParameterSchema);
+  if (!object(value)) return value;
+  const result: ObjectValue = {};
+  for (const [key, entry] of Object.entries(value)) {
+    // AssemblyAI omits false additionalProperties and inserts empty required
+    // arrays in the resolved JSON Schema. Our tool handlers still parse all
+    // arguments with strict Zod schemas; neither provider rewrite grants access.
+    if (key === 'additionalProperties' && entry === false) continue;
+    if (key === 'required' && Array.isArray(entry) && entry.length === 0) continue;
+    result[key] = key === 'required' && Array.isArray(entry) ? [...entry].sort() : normalizedParameterSchema(entry);
+  }
+  return result;
+}
 function normalizedTools(value: unknown): string {
   if (!Array.isArray(value) || value.length > 16) throw new Error('Invalid tools');
   return canonical(value.map(tool => {
     if (!object(tool) || tool.type !== 'function' || typeof tool.name !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(tool.name) || !object(tool.parameters) || tool.parameters.type !== 'object') throw new Error('Invalid tools');
-    return { type: tool.type, name: tool.name, description: tool.description ?? '', parameters: tool.parameters, execution_mode: tool.execution_mode ?? 'interactive', timeout_seconds: tool.timeout_seconds ?? 120 };
+    return { type: tool.type, name: tool.name, description: tool.description ?? '', parameters: normalizedParameterSchema(tool.parameters), execution_mode: tool.execution_mode ?? 'interactive', timeout_seconds: tool.timeout_seconds ?? 120 };
   }));
 }
 function configuration(config: VoiceAgentConfiguration): VoiceAgentConfiguration {
@@ -75,8 +89,7 @@ export class VoiceAgentProtocol implements VoiceAgent {
   private pendingByte: number | null = null;
   private sequence = 0;
   private events = 0;
-  private latestEvent = '';
-  private lastDone: { replyId: string; status: string } | null = null;
+  private toolResultsIdle = false;
   private userFinals = new Set<string>();
   private agentFinals = new Set<string>();
   private replies = new Set<string>();
@@ -129,10 +142,9 @@ export class VoiceAgentProtocol implements VoiceAgent {
   }
   interrupt() {
     this.activeReply = null; this.pendingByte = null;
-    for (const tool of this.tools.values()) if (!tool.sent) { tool.cancelled = true; clearTimeout(tool.timer ?? null); }
-    this.latestEvent = 'local.interrupt';
     // No undocumented cancel event: the provider handles barge-in; ownership
     // changes call close(). This immediately gates any late output frames.
+    // Pending tools remain held until a provider turn event resolves them.
   }
   send(pcm: Uint8Array): boolean {
     if (!this.ready || this.stopped || !pcm.byteLength || pcm.byteLength % 2 || pcm.byteLength > 4800) return false;
@@ -141,7 +153,6 @@ export class VoiceAgentProtocol implements VoiceAgent {
   }
   requestReply(instructions: string): boolean {
     if (!this.ready || this.stopped || typeof instructions !== 'string' || !instructions.trim() || instructions.length > 4000) return false;
-    this.latestEvent = 'local.reply';
     return this.write({ type: 'reply.create', instructions });
   }
   update(config: VoiceAgentConfiguration): boolean {
@@ -156,7 +167,6 @@ export class VoiceAgentProtocol implements VoiceAgent {
     let event: ObjectValue;
     try { const decoded: unknown = JSON.parse(raw); if (!object(decoded) || typeof decoded.type !== 'string') throw new Error(); event = decoded; }
     catch { this.fail('provider_invalid_event'); return; }
-    this.latestEvent = event.type as string;
     try { this.consume(event); } catch { this.fail('provider_invalid_event'); }
   }
   private consume(event: ObjectValue) {
@@ -173,14 +183,21 @@ export class VoiceAgentProtocol implements VoiceAgent {
     }
     if (this.closingBeforeIdentity) return;
     if (event.type === 'session.updated') {
-      if (!this.awaitingUpdate || !this.sessionId || !verifiedAudioAndModel(event.config)) { this.fail('provider_configuration_mismatch'); return; }
+      // The stored-agent bind can emit its resolved configuration before the
+      // provider creates a session ID. Verify it, but do not mistake it for
+      // acknowledgement of our later, mutable prompt/tools update.
+      if (!this.sessionId) {
+        if (this.awaitingUpdate || !verifiedAudioAndModel(event.config)) this.fail('provider_configuration_mismatch');
+        return;
+      }
+      if (!this.awaitingUpdate || !verifiedAudioAndModel(event.config)) { this.fail('provider_configuration_mismatch'); return; }
       if (event.config.system_prompt !== this.expected.systemPrompt || normalizedTools(event.config.tools) !== normalizedTools(this.expected.tools)) { this.fail('provider_configuration_mismatch'); return; }
       this.awaitingUpdate = false; this.ready = true; clearTimeout(this.configurationTimer ?? null);
       this.notify(() => this.callbacks.ready({ sessionId: this.sessionId! })); return;
     }
     if (!this.ready || !this.sessionId) return;
     const sessionId = this.sessionId;
-    if (event.type === 'input.speech.started') { this.interrupt(); this.notify(() => this.callbacks.speechStarted()); return; }
+    if (event.type === 'input.speech.started') { this.toolResultsIdle = false; this.interrupt(); this.notify(() => this.callbacks.speechStarted()); return; }
     if (event.type === 'transcript.user' || event.type === 'transcript.user.delta') {
       if (!id(event.item_id) || typeof event.text !== 'string' || event.text.length > 12000) throw new Error();
       if (this.userFinals.has(event.item_id)) return;
@@ -193,7 +210,7 @@ export class VoiceAgentProtocol implements VoiceAgent {
       if (this.replies.has(event.reply_id)) return;
       if (this.replies.size >= 2048) throw new Error();
       this.replies.add(event.reply_id);
-      for (const tool of this.tools.values()) if (tool.replyId !== event.reply_id && !tool.sent) { tool.cancelled = true; clearTimeout(tool.timer ?? null); }
+      this.toolResultsIdle = false;
       this.activeReply = event.reply_id.startsWith('fc-') ? null : event.reply_id;
       this.pendingByte = null;
       if (this.activeReply) this.notify(() => this.callbacks.replyStarted({ sessionId, replyId: event.reply_id as string }));
@@ -214,17 +231,21 @@ export class VoiceAgentProtocol implements VoiceAgent {
       if (this.agentFinals.size >= 2048) throw new Error(); this.agentFinals.add(event.reply_id);
       this.notify(() => this.callbacks.agentTranscript({ sessionId, itemId: event.item_id as string, replyId: event.reply_id as string, text: event.text as string, interrupted: event.interrupted as boolean, at: Date.now() }));
     } else if (event.type === 'reply.done') {
-      if (!id(event.reply_id) || (event.status !== 'completed' && event.status !== 'interrupted')) throw new Error();
-      this.lastDone = { replyId: event.reply_id, status: event.status };
+      // AssemblyAI omits status for an ordinary completed reply. It supplies
+      // "interrupted" when barge-in truncates one.
+      if (!id(event.reply_id) || (event.status !== undefined && event.status !== 'completed' && event.status !== 'interrupted')) throw new Error();
+      if (this.finished.has(event.reply_id)) return;
+      const status = event.status ?? 'completed';
       if (this.activeReply === event.reply_id) {
-        if (event.status === 'completed' && this.pendingByte !== null) { this.fail('provider_audio_incomplete'); return; }
+        if (status === 'completed' && this.pendingByte !== null) { this.fail('provider_audio_incomplete'); return; }
         this.activeReply = null; this.pendingByte = null;
       }
-      if (event.status === 'interrupted') for (const tool of this.tools.values()) if (tool.replyId === event.reply_id) { tool.cancelled = true; clearTimeout(tool.timer ?? null); }
-      if (!this.finished.has(event.reply_id)) {
-        if (this.finished.size >= 2048) throw new Error(); this.finished.add(event.reply_id);
-        this.notify(() => this.callbacks.replyDone({ sessionId, replyId: event.reply_id as string, status: event.status as 'completed' | 'interrupted' }));
+      this.toolResultsIdle = status === 'completed';
+      if (status === 'interrupted') {
+        for (const tool of this.tools.values()) if (!tool.sent) { tool.cancelled = true; clearTimeout(tool.timer ?? null); }
       }
+      if (this.finished.size >= 2048) throw new Error(); this.finished.add(event.reply_id);
+      this.notify(() => this.callbacks.replyDone({ sessionId, replyId: event.reply_id as string, status }));
       this.flushTools();
     } else if (event.type === 'tool.call') this.callTool(event);
   }
@@ -250,9 +271,9 @@ export class VoiceAgentProtocol implements VoiceAgent {
     catch { complete({ error: 'Tool unavailable' }, true); }
   }
   private flushTools() {
-    if (this.stopped || this.latestEvent !== 'reply.done' || this.lastDone?.status !== 'completed') return;
+    if (this.stopped || !this.toolResultsIdle) return;
     for (const [callId, tool] of this.tools) {
-      if (tool.replyId !== this.lastDone.replyId || tool.cancelled || tool.sent || tool.result === undefined) continue;
+      if (tool.cancelled || tool.sent || tool.result === undefined) continue;
       tool.sent = true;
       this.write({ type: 'tool.result', call_id: callId, result: tool.result, is_error: tool.error });
     }
@@ -263,9 +284,14 @@ export async function connectVoiceAgent(options: VoiceAgentOptions, callbacks: V
   configuration(options);
   if (!options.apiKey || !id(options.agentId)) throw new Error('Voice agent configuration unavailable');
   let response: Response;
-  const signal = AbortSignal.timeout(10000);
-  try { response = await fetch('https://agents.assemblyai.com/v1/ws', { headers: { Upgrade: 'websocket', Authorization: `Bearer ${options.apiKey}` }, signal }); }
-  catch { reportUnidentified(callbacks, signal.aborted ? 'connection_timeout' : 'connection_failed'); throw new Error('Voice agent connection unavailable'); }
+  // A fetch abort signal remains attached to an upgraded WebSocket. Cancel
+  // the handshake timer once the 101 arrives so it cannot end a healthy call.
+  const handshake = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; handshake.abort(); }, 10000);
+  try { response = await fetch('https://agents.assemblyai.com/v1/ws', { headers: { Upgrade: 'websocket', Authorization: `Bearer ${options.apiKey}` }, signal: handshake.signal }); }
+  catch { reportUnidentified(callbacks, timedOut ? 'connection_timeout' : 'connection_failed'); throw new Error('Voice agent connection unavailable'); }
+  finally { clearTimeout(timer); }
   if (response.status !== 101 || !response.webSocket) {
     try { await response.body?.cancel(); } catch { /* Do not leak provider errors. */ }
     // Do not infer a session ID or choose an unrelated session for deletion.

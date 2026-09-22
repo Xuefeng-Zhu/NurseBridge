@@ -23,7 +23,7 @@ The Voice Agent integration replaces the previous standalone STT/Aura-2 pipeline
 
 The AI collects information only. Every completed caller stays connected for a nurse. Each unresolved answer gets one clarification; if it remains unresolved, intake stops and requests nurse help. Explicit human requests, explicit emergency statements, consent refusal and technical failures also retain human access. The demo does not infer emergencies from symptoms.
 
-**Live activation is currently blocked.** The adapter, setup script, and deterministic tests are implemented, but actual Nemotron/AssemblyAI compatibility and provider recording retention controls need verification. Merely adding keys cannot bypass the recording gate. See [Voice Agent integration](docs/voice-agent.md). Mock mode remains runnable and never makes paid provider calls.
+**Public live activation is currently blocked.** One fictional local browser call exercised the configured AssemblyAI Voice Agent, Nebius model, evidence extraction, and nurse handoff. Provider recording retention controls and physical-device behavior remain unverified, so keys alone cannot bypass the public recording gate. See [Voice Agent integration](docs/voice-agent.md) and [test results](docs/test-results.md). Mock mode remains runnable and never makes paid provider calls.
 
 Live fictional intake requires separate recording consent. Provider recordings are permitted for the automated portion only; the waiting period and nurse conversation are not forwarded to the Voice Agent. Application case content expires after seven days. Provider deletion and retention are reported separately.
 
@@ -53,5 +53,7 @@ Install Playwright Chromium once before browser tests, or use an installed Chrom
 - `tests/fixtures`: exclusively fictional transcript/audio fixtures.
 
 Read [architecture](docs/architecture.md), [safety and privacy](docs/safety-and-privacy.md), [demo script](docs/demo-script.md), [compatibility](docs/compatibility.md), and [test results](docs/test-results.md).
+
+Watch the [80-second narrated demo](artifacts/demo/nursebridge-demo.mp4). It uses synthetic information and explicitly labeled mock transcript replay; [captions and source notes](artifacts/demo/README.md) are included.
 
 This repository is deployable; no public deployment, real clinical authentication, telephony integration, or medical validation is implied. The implementation result and remaining live checks are recorded in test-results.md.

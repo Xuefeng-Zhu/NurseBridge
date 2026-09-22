@@ -1,0 +1,40 @@
+{
+  "duration_seconds": 80,
+  "scenes": [
+    {
+      "scene": "title",
+      "start": 0,
+      "end": 8
+    },
+    {
+      "scene": "workspace",
+      "start": 8,
+      "end": 18
+    },
+    {
+      "scene": "caller",
+      "start": 18,
+      "end": 30
+    },
+    {
+      "scene": "nurse queue",
+      "start": 30,
+      "end": 43
+    },
+    {
+      "scene": "evidence",
+      "start": 43,
+      "end": 56
+    },
+    {
+      "scene": "human takeover",
+      "start": 56,
+      "end": 69
+    },
+    {
+      "scene": "closing",
+      "start": 69,
+      "end": 80
+    }
+  ]
+}

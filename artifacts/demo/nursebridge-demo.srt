@@ -1,0 +1,40 @@
+1
+00:00:00,800 --> 00:00:05,483
+Meet NurseBridge, a browser-call intake demo using
+fictional patient information.
+
+2
+00:00:08,800 --> 00:00:14,869
+A demo administrator creates a private workspace, then
+invites a caller into a separate browser session.
+
+3
+00:00:18,800 --> 00:00:27,322
+The caller joins the queue and starts intake. In this
+walkthrough, the words come from a labeled mock
+transcript replay, not microphone transcription.
+
+4
+00:00:30,800 --> 00:00:38,881
+The nurse sees arrival order, the caller's draft, and
+links to the original reported words. Queue position
+is not a clinical urgency ranking.
+
+5
+00:00:43,800 --> 00:00:52,983
+Corrections stay visible as revisions. Here, yesterday
+becomes this morning. An unmeasured temperature
+remains unmeasured, and every fact still needs nurse
+review.
+
+6
+00:00:56,800 --> 00:01:06,123
+The nurse can take over the browser call. After both
+sides connect, two-way human audio replaces automated
+forwarding. The caller speaks directly with the nurse.
+
+7
+00:01:09,800 --> 00:01:19,501
+NurseBridge collects context for human review. It does
+not diagnose, triage, or determine that waiting is
+safe. This demonstration uses only synthetic data.

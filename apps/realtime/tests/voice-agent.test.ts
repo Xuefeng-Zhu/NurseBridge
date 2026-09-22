@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { connectVoiceAgent, deleteVoiceAgentSession, VoiceAgentProtocol, VOICE_AGENT_LLM_BASE, VOICE_AGENT_MODEL, type VoiceAgentCallbacks, type VoiceAgentTool } from '../src/providers/voice-agent';
 
-const tools: VoiceAgentTool[] = [{ type: 'function', name: 'record_fact', description: 'Store sourced facts', parameters: { type: 'object', properties: {} } }];
+const tools: VoiceAgentTool[] = [{ type: 'function', name: 'record_fact', description: 'Store sourced facts', parameters: { type: 'object', properties: {}, additionalProperties: false } }];
 const config = { systemPrompt: 'Only approved fictional intake.', tools };
 const resolved = () => ({ system_prompt: config.systemPrompt, tools, input: { format: { encoding: 'audio/pcm', sample_rate: 24000 } }, output: { format: { encoding: 'audio/pcm', sample_rate: 24000 } }, llm: [{ base_url: VOICE_AGENT_LLM_BASE, model: VOICE_AGENT_MODEL }] });
 const open: VoiceAgentProtocol[] = [];
@@ -11,7 +11,7 @@ function fixture() {
   const transport = { send: vi.fn((message: string) => { sent.push(JSON.parse(message)); return true; }), close: vi.fn() };
   const agent = new VoiceAgentProtocol(transport, callbacks, config); open.push(agent);
   const receive = (value: unknown) => agent.receive(JSON.stringify(value));
-  const ready = () => { agent.start('agent-fixture'); receive({ type: 'session.ready', session_id: 'sess-fixture', config: resolved() }); receive({ type: 'session.updated', config: resolved() }); };
+  const ready = () => { agent.start('agent-fixture'); receive({ type: 'session.updated', config: resolved() }); receive({ type: 'session.ready', session_id: 'sess-fixture', config: resolved() }); receive({ type: 'session.updated', config: resolved() }); };
   return { agent, callbacks, transport, sent, receive, ready };
 }
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
@@ -27,6 +27,9 @@ describe('Voice Agent protocol in Workers', () => {
     const f = fixture(); f.agent.start('agent-fixture');
     expect(f.sent).toEqual([{ type: 'session.update', session: { agent_id: 'agent-fixture' } }]);
     expect(f.agent.send(new Uint8Array(2400))).toBe(false);
+    f.receive({ type: 'session.updated', config: resolved() });
+    expect(f.callbacks.sessionCreated).not.toHaveBeenCalled(); expect(f.callbacks.ready).not.toHaveBeenCalled();
+    expect(f.sent).toHaveLength(1); expect(f.agent.send(new Uint8Array(2400))).toBe(false);
     f.receive({ type: 'session.ready', session_id: 'sess-fixture', config: resolved() });
     expect(f.callbacks.sessionCreated).toHaveBeenCalledWith({ sessionId: 'sess-fixture' });
     expect(f.agent.ready).toBe(false);
@@ -36,6 +39,17 @@ describe('Voice Agent protocol in Workers', () => {
     expect(f.agent.send(new Uint8Array([1, 2]))).toBe(true);
     expect(f.sent.at(-1)).toEqual({ type: 'input.audio', audio: 'AQI=' });
     expect(f.agent.send(new Uint8Array(3))).toBe(false); expect(f.agent.send(new Uint8Array(4802))).toBe(false);
+  });
+  it.each(['format', 'model', 'greeting', 'missing'])('fails closed on pre-identity %s mismatch', mismatch => {
+    const f = fixture(); f.agent.start('agent-fixture'); const applied: any = resolved();
+    if (mismatch === 'format') applied.input.format.sample_rate = 16000;
+    if (mismatch === 'model') applied.llm[0].base_url = 'https://unapproved.example/v1';
+    if (mismatch === 'greeting') applied.greeting = 'Unexpected initial speech';
+    f.receive({ type: 'session.updated', config: mismatch === 'missing' ? {} : applied });
+    expect(f.callbacks.closed).toHaveBeenCalledWith('provider_configuration_mismatch');
+    expect(f.callbacks.unidentifiedSession).toHaveBeenCalledExactlyOnceWith({ reason: 'connection_failed' });
+    expect(f.callbacks.sessionCreated).not.toHaveBeenCalled(); expect(f.callbacks.ready).not.toHaveBeenCalled();
+    expect(f.sent.at(-1)?.type).toBe('session.end'); expect(f.agent.send(new Uint8Array(2400))).toBe(false);
   });
   it.each(['format', 'model', 'greeting', 'missing'])('fails closed on stored %s mismatch while retaining session identity for deletion', mismatch => {
     const f = fixture(); const applied: any = resolved();
@@ -63,6 +77,14 @@ describe('Voice Agent protocol in Workers', () => {
     expect(f.agent.send(new Uint8Array(2400))).toBe(false); expect(f.agent.update(config)).toBe(false);
     f.receive({ type: 'session.updated', config: { ...resolved(), system_prompt: 'Updated approved intake.', tools: tools.map(tool => ({ ...tool, execution_mode: 'interactive', timeout_seconds: 120 })) } });
     expect(f.agent.ready).toBe(true); expect(f.agent.send(new Uint8Array(2400))).toBe(true);
+  });
+  it('accepts provider JSON Schema normalization while preserving tool semantics', () => {
+    const f = fixture(); f.agent.start('agent-fixture');
+    f.receive({ type: 'session.updated', config: resolved() });
+    f.receive({ type: 'session.ready', session_id: 'sess-fixture', config: resolved() });
+    f.receive({ type: 'session.updated', config: { ...resolved(), tools: [{ ...tools[0], parameters: { type: 'object', properties: {}, required: [] }, execution_mode: 'interactive', timeout_seconds: 120, deployment_id: null }] } });
+    expect(f.agent.ready).toBe(true);
+    expect(f.callbacks.closed).not.toHaveBeenCalled();
   });
   it('deduplicates final item/reply ids and treats user deltas as replacement text', () => {
     const f = fixture(); f.ready();
@@ -94,6 +116,14 @@ describe('Voice Agent protocol in Workers', () => {
     const f = fixture(); f.ready(); f.receive({ type: 'reply.started', reply_id: 'reply-1' }); f.receive({ type: 'reply.audio', data: 'AQ==' }); f.receive({ type: 'reply.done', reply_id: 'reply-1', status: 'completed' });
     expect(f.callbacks.closed).toHaveBeenCalledWith('provider_audio_incomplete');
   });
+  it('treats reply.done without status as completion, while rejecting unknown status', () => {
+    const f = fixture(); f.ready(); f.receive({ type: 'reply.started', reply_id: 'reply-1' });
+    f.receive({ type: 'reply.done', reply_id: 'reply-1' });
+    expect(f.callbacks.replyDone).toHaveBeenCalledWith({ sessionId: 'sess-fixture', replyId: 'reply-1', status: 'completed' });
+    expect(f.callbacks.closed).not.toHaveBeenCalled();
+    f.receive({ type: 'reply.done', reply_id: 'reply-2', status: 'unexpected' });
+    expect(f.callbacks.closed).toHaveBeenCalledWith('provider_invalid_event');
+  });
   it('executes a duplicate tool once, never waits on it in the event handler, and sends only after its completed reply.done', async () => {
     const f = fixture(); f.ready(); let finish!: (value: unknown) => void;
     vi.mocked(f.callbacks.toolCall).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
@@ -105,13 +135,48 @@ describe('Voice Agent protocol in Workers', () => {
     expect(f.callbacks.toolCall).toHaveBeenCalledTimes(1); expect(f.sent.at(-1)).toEqual({ type: 'tool.result', call_id: 'call-1', result: '{"receipt":"durable-1"}', is_error: false });
     f.receive({ type: 'reply.done', reply_id: 'fc-call-1', status: 'completed' }); expect(f.sent.filter(event => event.type === 'tool.result')).toHaveLength(1);
   });
-  it('does not deliver a completed durable tool result after a new turn or interrupted reply', async () => {
+  it('holds a durable result through a new reply and flushes it after that reply completes', async () => {
     const f = fixture(); f.ready(); let finish!: (value: unknown) => void;
     vi.mocked(f.callbacks.toolCall).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
     f.receive({ type: 'tool.call', call_id: 'call-1', name: 'record_fact', arguments: {} }); f.receive({ type: 'reply.done', reply_id: 'fc-call-1', status: 'completed' });
     f.receive({ type: 'reply.started', reply_id: 'reply-2' }); finish({ receipt: 'already-durable' }); await flush();
+    expect(f.sent.some(event => event.type === 'tool.result')).toBe(false);
+    f.receive({ type: 'reply.done', reply_id: 'reply-2', status: 'completed' });
+    expect(f.sent.at(-1)).toEqual({ type: 'tool.result', call_id: 'call-1', result: '{"receipt":"already-durable"}', is_error: false });
     f.receive({ type: 'reply.done', reply_id: 'fc-call-1', status: 'completed' });
-    expect(f.sent.some(event => event.type === 'tool.result')).toBe(false); expect(f.callbacks.toolCall).toHaveBeenCalledTimes(1);
+    expect(f.sent.filter(event => event.type === 'tool.result')).toHaveLength(1); expect(f.callbacks.toolCall).toHaveBeenCalledTimes(1);
+  });
+  it('keeps the completed reply idle through transcripts and flushes all ready tools, including late results', async () => {
+    const f = fixture(); f.ready(); let finish!: (value: unknown) => void;
+    vi.mocked(f.callbacks.toolCall).mockImplementation(({ callId }) => callId === 'call-2' ? new Promise(resolve => { finish = resolve; }) : { receipt: 'first' });
+    f.receive({ type: 'tool.call', call_id: 'call-1', name: 'record_fact', arguments: { first: true } });
+    f.receive({ type: 'tool.call', call_id: 'call-2', name: 'record_fact', arguments: { second: true } });
+    await flush();
+    f.receive({ type: 'reply.done', reply_id: 'fc-call-2' });
+    expect(f.sent.filter(event => event.type === 'tool.result')).toEqual([{ type: 'tool.result', call_id: 'call-1', result: '{"receipt":"first"}', is_error: false }]);
+    f.receive({ type: 'transcript.user.delta', item_id: 'item-1', text: 'fictional' });
+    finish({ receipt: 'second' }); await flush();
+    expect(f.sent.filter(event => event.type === 'tool.result')).toEqual([
+      { type: 'tool.result', call_id: 'call-1', result: '{"receipt":"first"}', is_error: false },
+      { type: 'tool.result', call_id: 'call-2', result: '{"receipt":"second"}', is_error: false },
+    ]);
+  });
+  it('holds a pending tool through speech start and discards it only when the reply is interrupted', async () => {
+    const f = fixture(); f.ready(); let finish!: (value: unknown) => void;
+    vi.mocked(f.callbacks.toolCall).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    f.receive({ type: 'tool.call', call_id: 'call-1', name: 'record_fact', arguments: {} });
+    f.receive({ type: 'input.speech.started' }); finish({ receipt: 'stored' }); await flush();
+    expect(f.sent.some(event => event.type === 'tool.result')).toBe(false);
+    f.receive({ type: 'reply.done', reply_id: 'reply-2', status: 'completed' });
+    expect(f.sent.at(-1)).toMatchObject({ type: 'tool.result', call_id: 'call-1' });
+
+    const g = fixture(); g.ready(); let finishInterrupted!: (value: unknown) => void;
+    vi.mocked(g.callbacks.toolCall).mockImplementation(() => new Promise(resolve => { finishInterrupted = resolve; }));
+    g.receive({ type: 'tool.call', call_id: 'call-2', name: 'record_fact', arguments: {} });
+    g.receive({ type: 'reply.done', reply_id: 'reply-interrupted', status: 'interrupted' });
+    finishInterrupted({ receipt: 'too-late' }); await flush();
+    g.receive({ type: 'reply.done', reply_id: 'reply-next', status: 'completed' });
+    expect(g.sent.some(event => event.type === 'tool.result')).toBe(false);
   });
   it('rejects a tool call id reused with changed arguments', () => {
     const f = fixture(); f.ready(); f.receive({ type: 'tool.call', call_id: 'call-1', name: 'record_fact', arguments: {} }); f.receive({ type: 'tool.call', call_id: 'call-1', name: 'record_fact', arguments: { other: true } });
@@ -184,6 +249,17 @@ describe('Voice Agent protocol in Workers', () => {
     await new Promise(resolve => setTimeout(resolve, 10));
     expect(request.mock.calls[0][0]).toBe('https://agents.assemblyai.com/v1/ws'); expect(request.mock.calls[0][1]?.headers).toMatchObject({ Authorization: 'Bearer synthetic-test-key', Upgrade: 'websocket' });
     expect(received[0]).toEqual({ type: 'session.update', session: { agent_id: 'agent-test' } }); connection.close(); pair[1].close();
+  });
+  it('does not abort an upgraded socket when the handshake deadline passes', async () => {
+    vi.useFakeTimers();
+    const pair = new WebSocketPair(); pair[1].accept();
+    const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 101, webSocket: pair[0] }));
+    const f = fixture(); const connection = await connectVoiceAgent({ ...config, apiKey: 'synthetic-test-key', agentId: 'agent-test' }, f.callbacks);
+    const signal = request.mock.calls[0][1]?.signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    vi.advanceTimersByTime(10001);
+    expect(signal?.aborted).toBe(false);
+    connection.close(); pair[1].close();
   });
 });
 

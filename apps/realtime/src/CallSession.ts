@@ -26,7 +26,7 @@ export class CallSession extends DurableObject<Env>{
  private voice?:VoiceAgent;
  private providerConnection=0;
  private openingSession?:string;
- private voiceReplies=new Map<string,{epoch:number;generation:number;responseId:number;startedAt:number;playbackMeasured:boolean}>();
+ private voiceReplies=new Map<string,{epoch:number;generation:number;responseId:number;startedAt:number;playbackMeasured:boolean;audioReadyMeasured:boolean}>();
  private voiceQueue:{pcm:Uint8Array;replyId:string}[]=[];
  private voiceQueueBytes=0;
  private voiceDrain=false;
@@ -220,7 +220,9 @@ export class CallSession extends DurableObject<Env>{
   if(a.role==='caller'&&a.participantId===state.callerParticipantId){
    frame.streamKind=AudioStreamKind.Patient;
    if(state.conversationOwner==='NURSE'||state.conversationOwner==='HANDOFF_PENDING'&&state.handoff?.callerFlushed){this.relay(frame,'nurse');return;}
-   if(state.conversationOwner==='AI'&&state.consent&&state.mode==='live'&&this.voice){if(!this.voice.send(frame.payload))this.gap('Voice intake is not ready; part of the audio may be missing.');}
+   if(state.conversationOwner==='AI'&&state.consent&&state.mode==='live'&&this.voice){
+    if(!this.voice.send(frame.payload))this.gap('Voice intake is not ready; part of the audio may be missing.');
+   }
   }else if(a.participantId===state.claim?.participantId&&(a.role==='nurse'||a.role==='admin')){
    frame.streamKind=AudioStreamKind.Nurse;
    if(state.conversationOwner==='NURSE'||state.conversationOwner==='HANDOFF_PENDING'&&state.handoff?.callerFlushed)this.relay(frame,'caller');
@@ -273,7 +275,7 @@ export class CallSession extends DurableObject<Env>{
      speechStarted:()=>{if(!valid())return;this.abortAi('speech-started');this.mutate(s=>{s.aiStatus='listening';},'caller-speaking','Caller interrupted agent output.');this.publish();},
      userTranscript:turn=>{if(!valid())return;const normalized:TranscriptTurn={id:turn.id,sessionId:turn.sessionId,providerItemId:turn.itemId,order:this.state!.turns.length,text:turn.text,final:turn.final,at:turn.at,timingAvailability:'unavailable'};this.broadcast({type:'caption',turn:normalized});if(turn.final)this.ctx.waitUntil(this.acceptTurn(normalized));},
      agentTranscript:turn=>{if(!valid())return;const id=`${turn.sessionId}:${turn.replyId}`;if(this.state!.assistantTurns.some(t=>t.id===id))return;this.mutate(s=>{s.assistantTurns.push({id,sessionId:turn.sessionId,replyId:turn.replyId,text:turn.text,interrupted:turn.interrupted,at:turn.at,final:true});s.assistantTurns=s.assistantTurns.slice(-120);},'agent-transcript','Assistant transcript captured separately from caller evidence.');this.broadcast({type:'agent-text',text:turn.text});this.publish();},
-     replyStarted:({replyId})=>{if(!valid())return;const info={epoch:this.state!.controlEpoch,generation:this.state!.responseGeneration,responseId:++this.generationJob,startedAt:Date.now(),playbackMeasured:false};this.voiceReplies.set(replyId,info);this.currentSpeech=info;this.mutate(s=>{s.aiStatus='thinking';},'agent-reply','Voice Agent is preparing a reply.');this.publish();},
+     replyStarted:({replyId})=>{if(!valid())return;const info={epoch:this.state!.controlEpoch,generation:this.state!.responseGeneration,responseId:++this.generationJob,startedAt:Date.now(),playbackMeasured:false,audioReadyMeasured:false};this.voiceReplies.set(replyId,info);this.currentSpeech=info;this.mutate(s=>{s.aiStatus='thinking';},'agent-reply','Voice Agent is preparing a reply.');this.publish();},
      audio:({pcm,replyId})=>{if(valid())this.enqueueVoiceAudio(pcm,replyId);},
      replyDone:({replyId,status})=>{if(valid())this.ctx.waitUntil(this.finishVoiceReply(replyId,status));},
      toolCall:call=>valid()?this.handleVoiceTool(call):{error:'inactive_session'},
@@ -346,7 +348,7 @@ export class CallSession extends DurableObject<Env>{
     if(!this.current(reply.epoch,reply.generation))break;
     const sequence=++this.speechSequence;const payload=entry.pcm.slice(offset,offset+2400);
     for(const socket of recipients){const a=socket.deserializeAttachment() as Attachment;socket.send(encodeAudioFrame({streamKind:AudioStreamKind.Agent,sequence,sampleRate:24000,controlEpoch:reply.epoch,generation:reply.generation,responseId:reply.responseId,payload}));a.pending.push({sequence,streamKind:AudioStreamKind.Agent,responseId:reply.responseId});socket.serializeAttachment(a);}
-    if(offset===0)this.mutate(s=>{s.aiStatus='speaking';s.timings={...s.timings,firstAudioReadyMs:Date.now()-reply.startedAt};},'voice-audio','Voice Agent audio ready.');
+    if(!reply.audioReadyMeasured){reply.audioReadyMeasured=true;this.mutate(s=>{s.aiStatus='speaking';s.timings={...s.timings,firstAudioReadyMs:Date.now()-reply.startedAt};},'voice-audio','Voice Agent audio ready.');this.publish();}
    }
   }}finally{this.voiceDrain=false;}
  }
@@ -396,7 +398,7 @@ export class CallSession extends DurableObject<Env>{
   const epoch=this.state.controlEpoch;const generation=this.state.responseGeneration;const startedAt=Date.now();
   const source=structuredClone(this.state);const extractionAbort=new AbortController();this.extractionAbort=extractionAbort;
   try{
-   const output=source.mode==='mock'?mockExtraction(source.turns.at(-1)!,source.currentQuestion):await extract({apiKey:this.env.NEBIUS_API_KEY??'',model:this.env.EXTRACTION_MODEL,signal:extractionAbort.signal},{allowedFields:source.template.questions.map(q=>q.field),allowedQuestions:source.template.questions.map(q=>({id:q.id,field:q.field})),turns:source.turns.slice(-20),currentFacts:source.facts});
+   const output=source.mode==='mock'?mockExtraction(source.turns.at(-1)!,source.currentQuestion):await extract({apiKey:this.env.NEBIUS_API_KEY??'',model:this.env.EXTRACTION_MODEL,signal:extractionAbort.signal,validate:candidate=>validateExtraction(candidate,source.turns,source.template)},{allowedFields:source.template.questions.map(q=>q.field),allowedQuestions:source.template.questions.map(q=>({id:q.id,field:q.field})),turns:source.turns.slice(-20),currentFacts:source.facts});
    const checked=validateExtraction(output,source.turns,source.template);
    if(!this.current(epoch,generation))return;
    this.mutate(s=>{applyFacts(s,checked.facts,Date.now());s.providerSession.lastFinalizedTurnId=source.turns.at(-1)?.id;s.timings={...s.timings,extractionMs:Date.now()-startedAt};},'draft-revised','Evidence-linked intake draft updated; nurse review remains required.');

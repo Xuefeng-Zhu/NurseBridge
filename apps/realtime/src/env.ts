@@ -14,4 +14,5 @@ export interface Env {
   VOICE_AGENT_ID?: string;
   VOICE_AGENT_VERSION?: string;
   VOICE_AGENT_COMPATIBILITY_VERIFIED?: string;
+  FICTIONAL_LIVE_TEST?: string;
 }
