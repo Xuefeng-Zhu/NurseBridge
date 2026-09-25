@@ -41,7 +41,16 @@
     "EXTRACTION_MODEL": "nvidia/Nemotron-3_5-Lightning",
     "VOICE_AGENT_ID": "",
     "VOICE_AGENT_VERSION": "",
-    "VOICE_AGENT_COMPATIBILITY_VERIFIED": "false"
+    "VOICE_AGENT_COMPATIBILITY_VERIFIED": "false",
+    "PHONE_INBOUND_ENABLED": "false",
+    "TWILIO_ACCOUNT_SID": "",
+    "TWILIO_PUBLIC_ORIGIN": "",
+    "TWILIO_INBOUND_ROUTES": "{}",
+    "PHONE_MAX_CONCURRENT": "2",
+    "PHONE_DAILY_MINUTES": "60",
+    "MAX_ACTIVE_CALLS_PER_WORKSPACE": "2",
+    "MAX_LIVE_CONCURRENCY": "4",
+    "DAILY_AUDIO_MINUTES": "120"
   },
   "observability": {
     "enabled": false
@@ -79,8 +88,20 @@
         "EXTRACTION_MODEL": "nvidia/Nemotron-3_5-Lightning",
         "VOICE_AGENT_ID": "",
         "VOICE_AGENT_VERSION": "",
-        "VOICE_AGENT_COMPATIBILITY_VERIFIED": "false"
+        "VOICE_AGENT_COMPATIBILITY_VERIFIED": "false",
+        "PHONE_INBOUND_ENABLED": "false",
+        "TWILIO_ACCOUNT_SID": "",
+        "TWILIO_PUBLIC_ORIGIN": "",
+        "TWILIO_INBOUND_ROUTES": "{}",
+        "PHONE_MAX_CONCURRENT": "2",
+        "PHONE_DAILY_MINUTES": "60",
+        "MAX_ACTIVE_CALLS_PER_WORKSPACE": "2",
+        "MAX_LIVE_CONCURRENCY": "4",
+        "DAILY_AUDIO_MINUTES": "120"
       }
     }
-  }
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ]
 }

@@ -1,6 +1,6 @@
 # NurseBridge
 
-An operational browser-call demonstration: a fictional caller tells their story, an automated assistant prepares an evidence-linked intake draft, and a nurse joins the same audio session.
+An operational voice-call demonstration: a fictional caller tells their story, an automated assistant prepares an evidence-linked intake draft, and a nurse joins the same audio session. Callers can use a browser or an operator-configured Twilio phone number.
 
 **Simulation only — use fictional patient information. Not for medical care.** This demo does not diagnose, recommend treatment, assess urgency, or determine that waiting is safe. For a real emergency, contact emergency services.
 
@@ -23,9 +23,11 @@ The Voice Agent integration replaces the previous standalone STT/Aura-2 pipeline
 
 The AI collects information only. Every completed caller stays connected for a nurse. Each unresolved answer gets one clarification; if it remains unresolved, intake stops and requests nurse help. Explicit human requests, explicit emergency statements, consent refusal and technical failures also retain human access. The demo does not infer emergencies from symptoms.
 
-**Public live activation is currently blocked.** One fictional local browser call exercised the configured AssemblyAI Voice Agent, Nebius model, evidence extraction, and nurse handoff. Provider recording retention controls and physical-device behavior remain unverified, so keys alone cannot bypass the public recording gate. See [Voice Agent integration](docs/voice-agent.md) and [test results](docs/test-results.md). Mock mode remains runnable and never makes paid provider calls.
+**Public live AI activation is currently blocked.** One fictional local browser call exercised the configured AssemblyAI Voice Agent, Nebius model, evidence extraction, and nurse handoff. Provider recording retention controls and physical-device behavior remain unverified, so keys alone cannot bypass the public recording gate. See [Voice Agent integration](docs/voice-agent.md) and [test results](docs/test-results.md). The default local configuration runs without provider credentials or paid calls.
 
 Live fictional intake requires separate recording consent. Provider recordings are permitted for the automated portion only; the waiting period and nurse conversation are not forwarded to the Voice Agent. Application case content expires after seven days. Provider deletion and retention are reported separately.
+
+Optional [inbound phone support](docs/phone-inbound.md) routes a Twilio number into the same nurse queue and carries audio between the telephone and nurse browser. Phone-to-nurse calls work while AI activation remains blocked; callers hear that automation is unavailable. Phone support is disabled by default and requires an owned number, server secrets, HTTPS deployment and a real-number acceptance test. Mock AI mode does not eliminate carrier charges.
 
 ## Commands
 
@@ -38,12 +40,15 @@ pnpm build
 pnpm preview
 pnpm exec playwright install chromium
 pnpm test:browser
+PLAYWRIGHT_CHANNEL=chrome pnpm test:phone
 pnpm bindings
 ```
 
 `dev` and `preview` build the real Next.js/OpenNext artifact and start both Workers in one shared local runtime. A local-only gateway/proxy preserves web port 8787 and realtime port 8788 while D1/R2 each have one emulator authority. `dev:next` provides optional fast UI development on port 3000; it is not runtime acceptance evidence. Local D1 and R2 use `.local/state`. No case content belongs in localStorage or source control.
 
 Install Playwright Chromium once before browser tests, or use an installed Chrome with `PLAYWRIGHT_CHANNEL=chrome pnpm test:browser`. The development servers must be running while browser tests execute. The suite refuses live provider mode before enabling synthetic microphones.
+
+`test:phone` builds and starts its own isolated mock Workers runtime, tests a simulated Twilio call against a real nurse browser, and stops the runtime afterward. Stop any existing local dev server on ports 8787/8788 first. It uses no real carrier or AI credentials and preserves its temporary evidence directory. Add `-- --all` to include the full browser suite.
 
 ## Structure
 
@@ -56,4 +61,4 @@ Read [architecture](docs/architecture.md), [safety and privacy](docs/safety-and-
 
 Watch the [80-second narrated demo](artifacts/demo/nursebridge-demo.mp4). It uses synthetic information and explicitly labeled mock transcript replay; [captions and source notes](artifacts/demo/README.md) are included.
 
-This repository is deployable; no public deployment, real clinical authentication, telephony integration, or medical validation is implied. The implementation result and remaining live checks are recorded in test-results.md.
+This repository is deployable; no public deployment, real clinical authentication, verified PSTN call, or medical validation is implied. The implementation result and remaining live checks are recorded in test-results.md.

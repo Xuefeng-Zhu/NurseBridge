@@ -2,6 +2,7 @@ import type { Env } from './env';
 import { DEFAULT_EXTRACTION_MODEL } from './providers/nebius';
 import { RECORDING_DISCLOSURE_VERSION } from '@nursebridge/contracts';
 import { liveActivationIssues, RECORDING_CONTROLS_VERIFIED } from './providers/readiness';
+import { handlePhoneRequest } from './telephony/ingress';
 export { CallSession } from './CallSession';
 
 export function providerHealth(env: Env) {
@@ -13,6 +14,7 @@ export function providerHealth(env: Env) {
     configured: env.PROVIDER_MODE === 'mock' || voiceAgent && extraction,
     intakeConfigured: env.PROVIDER_MODE === 'mock' || activationIssues.length === 0,
     liveActivation: { ready: activationIssues.length === 0, issues: activationIssues },
+    phoneInbound: { provider: 'twilio', enabled: env.PHONE_INBOUND_ENABLED === 'true', configured: Boolean(env.TWILIO_ACCOUNT_SID?.trim() && env.TWILIO_AUTH_TOKEN?.trim() && env.TWILIO_PUBLIC_ORIGIN?.trim() && env.TWILIO_INBOUND_ROUTES?.trim() && env.TWILIO_INBOUND_ROUTES !== '{}') },
     recording: { provider: 'assemblyai', enabled: env.PROVIDER_MODE === 'live', disclosureVersion: RECORDING_DISCLOSURE_VERSION, retentionVerified: RECORDING_CONTROLS_VERIFIED, deletionVerified: RECORDING_CONTROLS_VERIFIED },
     providers: {
       voiceAgent: { provider: 'assemblyai-voice-agent', configured: voiceAgent, verified: false },
@@ -25,6 +27,10 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/health') return Response.json(providerHealth(env), { headers: { 'Cache-Control': 'no-store' } });
+    if (url.pathname.startsWith('/phone/')) {
+      const response = await handlePhoneRequest(request, env);
+      if (response) return response;
+    }
     const match = /^\/connect\/([a-zA-Z0-9_-]{8,100})$/.exec(url.pathname);
     if (!match || request.method !== 'GET') return new Response('Not found', { status: 404 });
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('WebSocket required', { status: 426 });

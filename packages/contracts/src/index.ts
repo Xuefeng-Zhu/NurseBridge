@@ -114,6 +114,8 @@ export interface IntakeTemplate {
 export interface CallSnapshot {
     version: 2;
     id: string;
+    /** Missing on older snapshots; defaults to a browser caller. */
+    channel?: 'browser' | 'phone';
     workspaceId: string;
     callerParticipantId: string;
     mode: Mode;
@@ -195,6 +197,11 @@ export const CommandBodySchema = z.object({ commandId: z.string().uuid(), expect
 export const ExtractionSchema = z.object({ facts: z.array(ProposedFactSchema).max(16), nextQuestionId: FieldSchema.nullable() });
 export type Extraction = z.infer<typeof ExtractionSchema>;
 export interface DemoSettings {
+    phoneInbound?: {
+        configured: boolean;
+        enabled: boolean;
+        provider: 'twilio';
+    };
     retentionDays: 7;
     recording: {
         provider: 'assemblyai';

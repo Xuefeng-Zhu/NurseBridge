@@ -7,6 +7,7 @@ export async function projectSnapshot(db: D1Database, snapshot: CallSnapshot): P
     await db.batch([
       db.prepare('INSERT OR IGNORE INTO deletion_tombstones(call_id,workspace_id,deleted_at) VALUES(?,?,?)').bind(id, workspaceId, Date.now()),
       ...contentTables.map(table => db.prepare(`DELETE FROM ${table} WHERE ${table === 'calls' ? 'id' : 'call_id'}=? AND workspace_id=?`).bind(id, workspaceId)),
+      ...(snapshot.channel === 'phone' ? [db.prepare("UPDATE inbound_calls SET template_json=NULL,consent_decision=NULL,status='deleted',terminal_at=COALESCE(terminal_at,?) WHERE call_id=? AND workspace_id=?").bind(Date.now(), id, workspaceId)] : []),
       db.prepare('INSERT INTO projection_checkpoints(call_id,workspace_id,revision,updated_at) VALUES(?,?,?,?) ON CONFLICT(call_id) DO UPDATE SET revision=MAX(revision,excluded.revision),updated_at=excluded.updated_at').bind(id, workspaceId, revision, Date.now()),
     ]);
     return;

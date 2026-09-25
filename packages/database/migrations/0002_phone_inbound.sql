@@ -1,0 +1,5 @@
+CREATE TABLE inbound_calls ( provider TEXT NOT NULL CHECK(provider='twilio'), account_sid TEXT NOT NULL, provider_call_sid TEXT NOT NULL, call_id TEXT UNIQUE, workspace_id TEXT, caller_participant_id TEXT, destination_hash TEXT, template_json TEXT, created_at INTEGER NOT NULL, expires_at INTEGER, deadline_at INTEGER, stream_token_expires_at INTEGER, status TEXT NOT NULL DEFAULT 'pending', terminal_at INTEGER, consent_decision TEXT CHECK(consent_decision IN ('accepted','declined','unavailable')), PRIMARY KEY(provider,account_sid,provider_call_sid) );
+CREATE INDEX inbound_calls_workspace ON inbound_calls(workspace_id,created_at);
+CREATE TABLE phone_reservations ( call_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, day TEXT NOT NULL, minutes INTEGER NOT NULL, expires_at INTEGER NOT NULL, released INTEGER NOT NULL DEFAULT 0 CHECK(released IN (0,1)) );
+CREATE INDEX phone_reservations_active ON phone_reservations(released,expires_at);
+CREATE INDEX phone_reservations_day ON phone_reservations(day);

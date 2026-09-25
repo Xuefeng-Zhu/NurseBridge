@@ -16,6 +16,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:browser": "playwright test",
+    "test:phone": "node scripts/test-phone.mjs",
     "build": "pnpm --filter @nursebridge/audio-client build && pnpm --filter @nursebridge/web build:worker",
     "preview": "node scripts/dev.mjs --preview",
     "bindings": "pnpm --filter @nursebridge/web bindings && pnpm --filter @nursebridge/realtime bindings",
@@ -25,14 +26,16 @@
     "test:voice-agent-setup": "node --test scripts/setup-voice-agent.test.mjs"
   },
   "devDependencies": {
-    "typescript": "5.9.3",
-    "vitest": "4.1.4",
-    "@playwright/test": "1.60.0",
     "@cloudflare/vitest-plugin": "1.1.13",
-    "eslint": "9.39.1",
-    "typescript-eslint": "8.46.2",
+    "@playwright/test": "1.60.0",
     "@types/node": "24.10.0",
-    "esbuild": "0.28.1"
+    "@types/ws": "8.18.1",
+    "esbuild": "0.28.1",
+    "eslint": "9.39.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.2",
+    "vitest": "4.1.4",
+    "ws": "8.21.3"
   },
   "type": "module"
 }

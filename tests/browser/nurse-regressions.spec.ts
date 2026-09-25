@@ -33,7 +33,7 @@ async function audioBrowser(frequency: 440 | 660): Promise<{ browser: Browser; c
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
-    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve(`tests/fixtures/microphone-${frequency}hz.wav`)}`, '--autoplay-policy=no-user-gesture-required'],
+    args: ['--disable-crashpad-for-testing', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve(`tests/fixtures/microphone-${frequency}hz.wav`)}`, '--autoplay-policy=no-user-gesture-required'],
   });
   const context = await browser.newContext({ baseURL, permissions: ['microphone'], viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce' });
   return { browser, context, page: await context.newPage() };

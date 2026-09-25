@@ -38,7 +38,7 @@ async function state(page: Page) {
 test('real browser audio resumes, reconnects with one fresh ticket, and releases capture on remote end or deletion', async ({}, testInfo) => {
   const browser = await chromium.launch({
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
-    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve('tests/fixtures/microphone-440hz.wav')}`, '--autoplay-policy=no-user-gesture-required'],
+    args: ['--disable-crashpad-for-testing', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve('tests/fixtures/microphone-440hz.wav')}`, '--autoplay-policy=no-user-gesture-required'],
   });
   const context = await browser.newContext({ baseURL, permissions: ['microphone'], reducedMotion: 'reduce' });
   const page = await context.newPage();

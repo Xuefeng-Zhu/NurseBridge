@@ -1,5 +1,30 @@
 # Test results
 
+## Inbound phone implementation verified on 2026-09-24
+
+Twilio inbound integration now connects a telephone media stream to the existing case, nurse queue and browser audio path. All verification in this section uses fictional local fixtures. No Twilio number was provisioned, no PSTN call was placed, no live AI was enabled, and nothing was deployed. [Operator setup](phone-inbound.md) documents the remaining number, credentials, HTTPS and real-call acceptance steps.
+
+| Executed check | Result |
+| --- | --- |
+| `pnpm typecheck` and `pnpm lint` | Pass |
+| `pnpm test` | 86 tests pass |
+| `pnpm test:workers` | 151 tests pass |
+| `pnpm test:voice-agent-setup` | 4 mocked tests pass |
+| `pnpm build` | Next.js/OpenNext and audio worklet builds pass |
+| `pnpm --filter @nursebridge/realtime build` | Worker dry-run bundle passes; nothing deployed |
+| `PLAYWRIGHT_CHANNEL=chrome pnpm test:phone -- --all` | 12 pass, 1 live-provider test skipped; 1.1 minutes; harness exits successfully |
+| `git diff --check` | Pass |
+
+Phone regressions cover signature validation against the configured origin, altered/ambiguous/oversized webhooks, stable concurrent admission, shared workspace limits, phone and AI budgets, consent refusal and unavailable-AI routing, short-lived single-use stream tokens, immediate media after authentication, media format and identity checks, playback barriers, DTMF 0, final filtered audio-tail playback, terminal callbacks, hangup retries, deadline, restart and deletion. A deterministic test holds the first D1 projection while five duplicate arrivals wait; all five receive one stable successful case. A post-delete ringing callback cannot confirm carrier termination; a signed completed event can finish cleanup even after the template is scrubbed.
+
+The browser phone test connects a signed local Twilio protocol emulator to an actual Chrome nurse microphone and AudioWorklet. It holds carrier playback receipts and verifies that neither a clear nor one-way playback alone marks the call Connected. It verifies both audio directions, CLOSED cleanup of the microphone and AudioContext, phone labels, mobile layout and Settings routing information. This is a protocol emulator, not telephone-network or physical-device proof.
+
+The saved [redacted phone audio proof](evidence/phone-protocol-proof.json) measured 438.83 Hz at the nurse from the 440 Hz phone fixture and 660.00 Hz at simulated phone playback from the 660 Hz nurse microphone fixture. The nurse worklet consumed 39,680 human samples with zero stale agent samples, dropped frames or underruns in that capture. Desktop, 390px mobile and Settings screenshots were inspected. These are local fixture observations, not real-call quality or latency guarantees.
+
+The reproducible `test:phone` command uses a fresh temporary D1/R2/DO runtime, synthetic account credentials and a local carrier-completion service. Its mock-mode and workspace checks run before media starts. Existing local data and `.dev.vars` are preserved. Phone service is disabled by default. Public AI activation remains subject to the separate recording and compatibility checks described below; phone-to-nurse routing does not bypass them.
+
+An initial full browser run passed its assertions but stalled during macOS Chrome teardown because crash helpers retained a stderr pipe. Test launches now disable crashpad with Chromium's test-only flag; the complete rerun exited successfully and stopped its local services. The final screenshots, HTML report and logs are in `/var/folders/0k/rqgj4mxn54j3_78wyykw4xnh0000gn/T/nursebridge-phone-qa-22Om1P`. The harness prints a new private temporary artifact directory each run.
+
 ## QA fixes verified on 2026-09-24
 
 The confirmed local QA failures are fixed and covered by regressions. This run used the rebuilt OpenNext app and realtime Worker in one shared local runtime, explicit mock providers, synthetic microphone fixtures, and a fresh temporary D1/R2/DO persistence directory. Existing local demo data and provider credentials were not changed. Nothing was deployed, and live-provider and physical-device checks were not rerun.
@@ -103,6 +128,6 @@ The default runtime is explicit mock mode. Deterministic tests require no provid
 
 The opt-in live browser test uses synthesized fictional caller speech and a local-only `FICTIONAL_LIVE_TEST` gate to exercise the real providers while recording-retention controls remain unverified. This one run demonstrates the exercised AssemblyAI Voice Agent, Nemotron, extraction, playback and handoff path locally; it does not establish broad provider compatibility, reliability or production readiness. Production live activation remains blocked pending supported account recording-retention controls and independent production verification. The documented provider DELETE is soft deletion; mocked DELETE tests do not prove physical erasure or backup expiry. A connection failure before a session ID arrives may require manual provider-history reconciliation. See [Voice Agent integration](voice-agent.md).
 
-Also pending: physical two-device audibility, echo, permissions, autoplay, interruption and constrained-network behavior; repeated live timing and reliability measurements; remote D1/R2/Access/Turnstile; staging/public deployment; and hackathon publishing materials. The [manual checklist](demo-script.md#manual-two-device-checks) is separate from fixture evidence. No clinical use, symptom-based emergency detection or telephony capability is claimed.
+Also pending: physical two-device audibility, echo, permissions, autoplay, interruption and constrained-network behavior; repeated live timing and reliability measurements; remote D1/R2/Access/Turnstile; staging/public deployment; and hackathon publishing materials. The [manual checklist](demo-script.md#manual-two-device-checks) is separate from fixture evidence. No clinical use, symptom-based emergency detection or verified PSTN delivery is claimed. Optional inbound phone implementation and its separate local evidence are described above.
 
 Retention and call-duration alarms are exercised with time controls, not a seven-day wall-clock run. Application deletion fences and provider soft deletion are distinct. WebSocket audio remains subject to TCP head-of-line blocking. No real patient data was used.

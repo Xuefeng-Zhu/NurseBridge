@@ -3,6 +3,6 @@
 export default {
   fetch(request, env) {
     const path = new URL(request.url).pathname;
-    return (path === '/health' || path.startsWith('/connect/') ? env.REALTIME : env.WEB).fetch(request);
+    return (path === '/health' || path.startsWith('/connect/') || path.startsWith('/phone/') ? env.REALTIME : env.WEB).fetch(request);
   },
 };

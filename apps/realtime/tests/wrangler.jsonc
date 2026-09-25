@@ -2,9 +2,42 @@
   "name": "nursebridge-realtime-test",
   "main": "../src/index.ts",
   "compatibility_date": "2026-09-18",
-  "durable_objects": {"bindings": [{"name": "CALL_SESSIONS", "class_name": "CallSession"}]},
-  "migrations": [{"tag": "v1", "new_sqlite_classes": ["CallSession"]}],
-  "d1_databases": [{"binding": "DB", "database_name": "nursebridge-test", "database_id": "00000000-0000-0000-0000-000000000002"}],
-  "r2_buckets": [{"binding": "EXPORTS", "bucket_name": "nursebridge-test-exports"}],
-  "vars": {"PROVIDER_MODE": "mock", "ALLOWED_ORIGINS": "http://localhost:8787", "MAX_CALL_SECONDS": "600", "RETENTION_SECONDS": "604800"}
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CALL_SESSIONS",
+        "class_name": "CallSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "CallSession"
+      ]
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nursebridge-test",
+      "database_id": "00000000-0000-0000-0000-000000000002"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "EXPORTS",
+      "bucket_name": "nursebridge-test-exports"
+    }
+  ],
+  "vars": {
+    "PROVIDER_MODE": "mock",
+    "ALLOWED_ORIGINS": "http://localhost:8787",
+    "MAX_CALL_SECONDS": "600",
+    "RETENTION_SECONDS": "604800"
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ]
 }
