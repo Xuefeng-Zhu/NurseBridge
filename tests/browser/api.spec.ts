@@ -10,8 +10,14 @@ test('Workers HTTP preserves template versions, private exports, and terminal de
   expect(call.queueState).toBe('WAITING');expect(call.intakeState).toBe('NOT_STARTED');
   const retry=await admin.post('/api/calls',{data:{commandId:createId}});expect((await retry.json()).call.id).toBe(call.id);
   expect((await stranger.get(`/api/calls/${call.id}`)).status()).toBe(404);
-  const initialSettings=await(await admin.get('/api/settings')).json();expect(initialSettings.recording).toMatchObject({provider:'assemblyai',enabled:false,disclosureVersion:'voice-agent-recording-v1',retentionVerified:false,deletionVerified:false});expect(initialSettings.providers).toHaveProperty('voiceAgent');expect(initialSettings.providers).not.toHaveProperty('tts');const updated=await admin.patch('/api/settings',{data:{template:{...initialSettings.template,name:'Second fictional template'},escalationDestination:'Demo nurse queue'}});expect(updated.status()).toBe(200);expect((await updated.json()).template.version).toBe(2);
+  for (const facts of ['malformed', [{ field: 'reason', value: 'Unsupported fictional statement', rawWording: 'Unsupported fictional statement', status: 'reported', evidence: [{ turnId: 'missing-turn', quote: 'Unsupported fictional statement' }] }]]) {
+   const invalid=await admin.patch(`/api/calls/${call.id}/intake`,{data:{commandId:crypto.randomUUID(),facts}});
+   expect(invalid.status()).toBe(400);
+   expect((await(await admin.get(`/api/calls/${call.id}`)).json()).snapshot).toMatchObject({facts:[],factRevisions:[],controlRevision:call.controlRevision});
+  }
+  const initialSettings=await(await admin.get('/api/settings')).json();expect(initialSettings.recording).toMatchObject({provider:'assemblyai',enabled:false,disclosureVersion:'voice-agent-recording-v1',retentionVerified:false,deletionVerified:false});expect(initialSettings.providers).toHaveProperty('voiceAgent');expect(initialSettings.providers).not.toHaveProperty('tts');const updated=await admin.patch('/api/settings',{data:{template:{...initialSettings.template,name:'Second fictional template'},escalationDestination:'Synthetic staff destination'}});expect(updated.status()).toBe(200);expect((await updated.json()).template.version).toBe(2);
   expect((await(await admin.get(`/api/calls/${call.id}`)).json()).snapshot.template.version).toBe(1);
+  const templateOnly=await admin.patch('/api/settings',{data:{template:{...initialSettings.template,name:'Template-only fictional update'}}});expect(templateOnly.status()).toBe(200);const templateOnlySettings=await templateOnly.json();expect(templateOnlySettings.template.version).toBe(3);expect(templateOnlySettings.escalationDestination).toBe('Synthetic staff destination');
   expect((await admin.patch('/api/settings',{data:{recording:{enabled:false}}})).status()).toBe(400);
   const consentId=crypto.randomUUID();expect((await admin.post(`/api/calls/${call.id}/consent`,{data:{commandId:consentId,accepted:false}})).status()).toBe(200);
   expect((await admin.post(`/api/calls/${call.id}/consent`,{data:{commandId:consentId,accepted:true}})).status()).toBe(409);

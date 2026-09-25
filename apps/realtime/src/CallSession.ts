@@ -19,6 +19,7 @@ const hash=async(value:string)=>Array.from(new Uint8Array(await crypto.subtle.di
 const token=()=>Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,'0')).join('');
 const delay=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms));
 const canonical=(value:unknown):string=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
+const intakeValidationErrors=new Set(['Field outside template','Evidence quote does not match finalized transcript','Raw wording is unsupported','Value must preserve supported wording','Not measured cannot be a denial','Uncertainty must be retained','Question outside template']);
 
 export class CallSession extends DurableObject<Env>{
  private store:SessionStore;
@@ -122,8 +123,13 @@ export class CallSession extends DurableObject<Env>{
      next.participants.nurse=claimant.length>0;next.mediaReady.nurse=claimant.some(a=>a.mediaReady);
     }
     if(command.type==='intake'){
-     const facts=ProposedFactSchema.array().max(16).parse(command.payload?.facts);
-     validateExtraction({facts,nextQuestionId:null},next.turns,next.template);applyFacts(next,facts,Date.now(),command.participantId);
+     let facts;
+     try{facts=ProposedFactSchema.array().max(16).parse(command.payload?.facts);validateExtraction({facts,nextQuestionId:null},next.turns,next.template);}
+     catch(error){
+      if(error instanceof z.ZodError||error instanceof Error&&intakeValidationErrors.has(error.message))fail(400,'invalid_intake','Intake facts must use valid fields and matching finalized caller evidence.');
+      throw error;
+     }
+     applyFacts(next,facts,Date.now(),command.participantId);
     }
 
     this.store.commit(next,command.type,`Call action: ${command.type}.`);
@@ -248,7 +254,12 @@ export class CallSession extends DurableObject<Env>{
   const s=this.state;if(!s?.handoff||!s.handoff.callerFlushed||!s.handoff.callerHeard||!s.handoff.nurseHeard)return;
   this.mutate(next=>{next.queueState='CONNECTED';next.conversationOwner='NURSE';next.aiStatus='stopped';next.controlRevision++;next.claim!.expiresAt=Date.now()+600000;next.timings={...next.timings,handoffMs:Date.now()-(next.handoffStartedAt??Date.now())};delete next.handoff;},'connected','Two-way human audio playback confirmed. AI provider audio forwarding is disabled.');this.stopProvider();this.publish();
  }
- async webSocketClose(socket:WebSocket){this.disconnected(socket);}
+ async webSocketClose(socket:WebSocket,code=1000,reason=''){
+  this.disconnected(socket);
+  // Hibernatable sockets require our half of a peer-initiated close handshake.
+  // Reserved synthetic close codes cannot be sent back over the wire.
+  try{socket.close([1005,1006,1015].includes(code)?1000:code,reason);}catch{/* Already closed. */}
+ }
  async webSocketError(socket:WebSocket){this.disconnected(socket);try{socket.close(1011,'Connection failed');}catch{}}
  private disconnected(socket:WebSocket){
   const a=socket.deserializeAttachment() as Attachment|null;if(!a?.authenticated||!this.state||this.state.deleted)return;

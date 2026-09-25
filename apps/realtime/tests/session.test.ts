@@ -55,6 +55,34 @@ describe('real Durable Object authority',()=>{
   await runInDurableObject(stub,(_instance,state)=>{state.storage.sql.exec('UPDATE tickets SET expires_at=0');});
   const response=await exports.default.fetch(`http://localhost/connect/${callId}`,{headers:{Upgrade:'websocket',Origin:'http://localhost:8787'}});const socket=response.webSocket!;socket.accept();const closed=new Promise<number>(resolve=>socket.addEventListener('close',event=>resolve(event.code)));socket.send(JSON.stringify({type:'auth',ticket:issued.ok&&issued.ticket}));expect(await closed).toBe(1008);
  });
+ it('completes a client close handshake and accepts a fresh authenticated connection',async()=>{
+  const{stub,callId}=await create();const issued=await stub.issueTicket({workspaceId:'workspace-a',participantId:'caller-a',role:'caller'});
+  const socket=await connect(callId,String(issued.ok&&issued.ticket));
+  const closed=new Promise<number>((resolve,reject)=>{const timeout=setTimeout(()=>reject(new Error('Client close handshake did not finish')),1500);socket.addEventListener('close',event=>{clearTimeout(timeout);resolve(event.code);});});
+  socket.close(1000,'Client reconnecting');expect(await closed).toBe(1000);
+  await waitSnapshot(stub,s=>!s.participants.caller);
+  const next=await stub.issueTicket({workspaceId:'workspace-a',participantId:'caller-a',role:'caller'});expect(next.ok&&next.ticket).not.toBe(issued.ok&&issued.ticket);
+  const replacement=await connect(callId,String(next.ok&&next.ticket));await waitSnapshot(stub,s=>s.participants.caller);replacement.close();
+ });
+ it.each([
+  {facts:'invalid'},
+  {facts:[{field:'reason',value:'Fictional headache',rawWording:'Fictional headache',status:'reported',evidence:[{turnId:'missing-turn',quote:'Fictional headache'}]}]},
+ ])('rejects invalid nurse intake as a client error without changing state or spending its command ID',async payload=>{
+  const{stub}=await create();const attempted=command('intake','nurse-a','nurse',payload);
+  expect(await stub.command(attempted)).toMatchObject({ok:false,status:400,code:'invalid_intake'});
+  expect(await stub.snapshot('workspace-a')).toMatchObject({ok:true,snapshot:{controlRevision:0,facts:[],factRevisions:[]}});
+  expect(await stub.command({...attempted,payload:{facts:[]}})).toMatchObject({ok:true,snapshot:{controlRevision:1}});
+ });
+ it('keeps unexpected persistence failures as server errors after valid intake validation',async()=>{
+  const{stub}=await create();
+  const result=await runInDurableObject(stub,async instance=>{
+   const internal=instance as unknown as {store:{commit(...args:unknown[]):void}};
+   const commit=vi.spyOn(internal.store,'commit').mockImplementationOnce(()=>{throw new Error('Synthetic storage failure');});
+   try{return await instance.command(command('intake','nurse-a','nurse',{facts:[]}));}finally{commit.mockRestore();}
+  });
+  expect(result).toMatchObject({ok:false,status:503,code:'session_unavailable'});
+  expect(await stub.snapshot('workspace-a')).toMatchObject({ok:true,snapshot:{controlRevision:0,facts:[]}});
+ });
  it('recovers authoritative claims after actual object eviction',async()=>{
   const{stub}=await create();await stub.command(command('claim'));await evictDurableObject(stub);const result=await stub.snapshot('workspace-a');expect(result.ok&&result.snapshot).toMatchObject({queueState:'CLAIMED',claim:{participantId:'nurse-a'}});
  });

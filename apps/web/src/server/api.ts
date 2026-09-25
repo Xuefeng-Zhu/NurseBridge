@@ -115,15 +115,15 @@ export async function settings(request: Request) { const bindings = env(), user 
 }
 catch { /* Unavailable remains explicitly unverified. */ } return json({ escalationDestination: 'Demo nurse queue', ...JSON.parse(row?.settings_json ?? '{}'), retentionDays: 7, recording, template: await template(bindings, user.workspaceId), mode: bindings.PROVIDER_MODE, providers }); }
 const TemplateSchema = z.object({ id: z.string().min(1).max(64), name: z.string().min(1).max(120), opening: z.string().min(1).max(1000), acknowledgments: z.array(z.string().min(1).max(500)).min(1).max(8), questions: z.array(z.object({ id: FieldSchema, field: FieldSchema, text: z.string().min(1).max(500) })).min(1).max(8) });
-export async function updateSettings(request: Request) { const { bindings, user, data } = await mutation(request, ['admin']); const destination = z.string().min(1).max(120).parse(data.escalationDestination ?? 'Demo nurse queue'); if (data.recording !== undefined || data.retentionDays !== undefined && data.retentionDays !== 7)
-    throw new HttpError(400, 'Provider recording is controlled by deployment configuration; application retention stays at seven days'); const statements = [bindings.DB.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').bind(JSON.stringify({ escalationDestination: destination }), user.workspaceId)]; if (data.template) {
+export async function updateSettings(request: Request) { const { bindings, user, data } = await mutation(request, ['admin']); const destination = data.escalationDestination === undefined ? undefined : z.string().min(1).max(120).parse(data.escalationDestination); if (data.recording !== undefined || data.retentionDays !== undefined && data.retentionDays !== 7)
+    throw new HttpError(400, 'Provider recording is controlled by deployment configuration; application retention stays at seven days'); const statements = destination === undefined ? [] : [bindings.DB.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').bind(JSON.stringify({ escalationDestination: destination }), user.workspaceId)]; if (data.template) {
     const input = TemplateSchema.parse(data.template);
     if (new Set(input.questions.map(q => q.id)).size !== input.questions.length || input.questions.some(q => q.id !== q.field))
         throw new HttpError(400, 'Template question IDs must be unique and match their fields');
     const current = await template(bindings, user.workspaceId);
     const next = { ...input, version: current.version + 1, createdAt: Date.now() };
     statements.push(bindings.DB.prepare('INSERT INTO template_versions(id,workspace_id,version,body_json,created_at) VALUES(?,?,?,?,?)').bind(input.id, user.workspaceId, next.version, JSON.stringify(next), Date.now()));
-} await bindings.DB.batch(statements); return settings(request); }
+} if (statements.length > 0) await bindings.DB.batch(statements); return settings(request); }
 export async function exportCase(request: Request, id: string) {
     const { bindings, user, data } = await mutation(request, ['admin', 'nurse']);
     const call = await authoritative(bindings, user, id);

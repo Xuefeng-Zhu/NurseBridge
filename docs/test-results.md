@@ -1,5 +1,38 @@
 # Test results
 
+## QA fixes verified on 2026-09-24
+
+The confirmed local QA failures are fixed and covered by regressions. This run used the rebuilt OpenNext app and realtime Worker in one shared local runtime, explicit mock providers, synthetic microphone fixtures, and a fresh temporary D1/R2/DO persistence directory. Existing local demo data and provider credentials were not changed. Nothing was deployed, and live-provider and physical-device checks were not rerun.
+
+| Executed check | Result |
+| --- | --- |
+| `pnpm typecheck` | Pass across all six workspace packages |
+| `pnpm lint` | Pass; final browser-test additions also linted |
+| `pnpm test` | 76 tests pass |
+| `pnpm test:workers` | 119 tests pass |
+| `pnpm test:voice-agent-setup` | 4 mocked tests pass |
+| `pnpm build` | Next.js and OpenNext Worker build pass |
+| `PLAYWRIGHT_CHANNEL=chrome pnpm exec playwright test` | 11 pass; opt-in live-provider test skipped; 1.2 minutes |
+| Final HTTP regression rerun | 1 pass, including malformed/unsupported intake rejection and template-only settings updates |
+| `git diff --check` | Pass |
+
+Regression coverage now verifies:
+
+- Switching fact editors resets wording, status and evidence to the target field; saving cannot carry the prior field's draft into another field. Context tabs support arrow keys, Home, End and roving focus.
+- Selecting another case during a pending claim or an active human conversation preserves both microphone paths. Persistent controls mute, return to and end the active call by its ID. Desktop and 390px mobile panel navigation preserve the conversation without horizontal overflow.
+- Remote end, `CLOSED` snapshots, deletion events and HTTP deletion recovery stop capture, close AudioContexts, cancel reconnects and remove stale waiting/reconnect controls. Late permission, worklet and decoder results cannot revive closed resources or mutate a newer connection.
+- A client-initiated WebSocket close completes its handshake in Chrome. Reconnection gets one fresh ticket; authentication and ticket failures have one retry scheduler, and stale asynchronous completions are ignored. A failed initial ticket can be retried through the UI.
+- Suspended audio exposes Resume audio. Both a user click and a browser-driven context resume restore playback readiness and clear the pause error.
+- Failed caller list/detail restoration blocks Join until Retry succeeds, preserving the existing call and arrival instead of creating a duplicate.
+- Cancel discards template edits. Destination saves preserve an unpublished template draft; publishing preserves the destination draft and concurrent saved destination changes.
+- Malformed facts and unsupported evidence return HTTP 400 without changing the case. Unexpected persistence failures remain 503.
+
+The actual two-browser audio proof measured 658.24 Hz at the caller from the 660 Hz nurse fixture, and 438.83 Hz at the nurse from the 440 Hz caller fixture. Both recorded zero stale agent samples after takeover, zero dropped frames and zero underruns; the measured handoff was 157 ms. These are local fixture observations, not live-provider or physical-device quality claims.
+
+Screenshots of desktop/mobile active-call controls were inspected. This run's screenshots, audio proof and isolated runtime state are under `/tmp/nursebridge-fixes-20260924`; committed browser regressions regenerate evidence through Playwright. Production, real-device audibility, retention and repeated live-provider verification remain the separate acceptance work described below.
+
+## Historical verification on 2026-09-21
+
 Verified locally on 2026-09-21 against the Voice Agent implementation. AssemblyAI stored agent `agent_3163c2eb3794484b8d4c780107615e94` was created and read back with the configured Nebius model, voice and PCM settings. The mock browser suite and a separate fictional live-provider browser test passed. No public deployment or physical two-device test was performed.
 
 ## Executed checks

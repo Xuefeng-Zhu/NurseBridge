@@ -1,5 +1,7 @@
 import { AUDIO_FRAME_BYTES, AUDIO_SAMPLE_RATE, AudioStreamKind, decodeAudioFrame, encodeAudioFrame, type AudioFrame } from './protocol';
 
+const PLAYBACK_PAUSED = 'Audio playback paused. Enable audio again to continue.';
+
 export interface BrowserCallState {
   connection: 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'closed' | 'error';
   microphone: 'idle' | 'requesting' | 'ready' | 'denied' | 'error';
@@ -55,6 +57,8 @@ export class BrowserCall {
   private playback: AudioWorkletNode | undefined;
   private silentSink: GainNode | undefined;
   private mediaPromise: Promise<void> | undefined;
+  private mediaVersion = 0;
+  private playbackReady = false;
   private heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempt = 0;
@@ -82,15 +86,21 @@ export class BrowserCall {
   getState(): BrowserCallState { return { ...this.state }; }
 
   async connect(ticket: string, url: string): Promise<void> {
+    this.reconnectAttempt = 0;
+    return this.openConnection(ticket, url);
+  }
+
+  private async openConnection(ticket: string, url: string): Promise<void> {
     this.intentionalClose = false;
     this.url = url;
     const version = ++this.connectionVersion;
     this.socket?.close(1000, 'Connection renewed');
     clearTimeout(this.heartbeatTimer);
     clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
     this.credits = 0;
     this.update({ connection: this.reconnectAttempt ? 'reconnecting' : 'connecting', error: undefined });
-    await new Promise<void>((resolve, reject) => {
+    try { await new Promise<void>((resolve, reject) => {
       let authenticated = false;
       const socket = new WebSocket(url);
       this.socket = socket;
@@ -98,7 +108,9 @@ export class BrowserCall {
       const timeout = setTimeout(() => {
         if (!authenticated) { socket.close(1000, 'Authentication timed out'); reject(new Error('Connection authentication timed out')); }
       }, 8000);
-      socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', ticket }));
+      socket.onopen = () => {
+        if (version === this.connectionVersion && !this.intentionalClose) socket.send(JSON.stringify({ type: 'auth', ticket }));
+      };
       socket.onmessage = ({ data }: MessageEvent<string | ArrayBuffer>) => {
         if (version !== this.connectionVersion) return;
         this.lastServerMessage = Date.now();
@@ -115,10 +127,13 @@ export class BrowserCall {
           if (event.role === 'caller' || event.role === 'nurse' || event.role === 'observer') this.role = event.role;
           this.reconnectAttempt = 0;
           this.update({ connection: 'connected', error: undefined });
-          this.readSnapshot(event.snapshot);
-          this.announceReadiness();
-          this.scheduleHeartbeat(version);
+          this.handleEvent(event);
+          if (version === this.connectionVersion && !this.intentionalClose) {
+            this.announceReadiness();
+            this.scheduleHeartbeat(version);
+          }
           resolve();
+          return;
         } else if (!authenticated) {
           if (event.type === 'error') {
             clearTimeout(timeout);
@@ -144,40 +159,52 @@ export class BrowserCall {
         if (!this.intentionalClose) {
           this.update({ connection: 'disconnected', error: 'Audio disconnected. Speech during this gap was not transmitted.' });
           this.options.onEvent?.({ type: 'connection-gap' });
-          this.scheduleReconnect();
+          // Before authentication, the rejected connect promise owns retries.
+          if (authenticated) this.scheduleReconnect();
         }
       };
-    });
+    }); } catch (error) {
+      if (version === this.connectionVersion && !this.intentionalClose) {
+        this.update({ connection: 'disconnected', error: 'Audio connection could not authenticate. Retrying requires a new ticket.' });
+        this.scheduleReconnect();
+      }
+      throw error;
+    }
   }
 
   /** Invoke directly from a user click, before awaiting network work. */
   enableMedia(): Promise<void> {
+    if (this.intentionalClose) return Promise.reject(new Error('Connect to a call before enabling audio.'));
     if (this.mediaPromise) return this.mediaPromise;
     if (this.state.microphone === 'ready' && this.context) {
-      return this.context.resume().then(() => {
-        this.update({ playback: this.context?.state === 'running' ? 'ready' : 'blocked' });
-        this.announceReadiness();
+      const context = this.context, version = this.mediaVersion;
+      return context.resume().then(() => {
+        if (version === this.mediaVersion && context === this.context && !this.intentionalClose) this.updatePlaybackReadiness();
       });
     }
     if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       return Promise.reject(new Error('Microphone audio requires HTTPS or localhost and a supported browser.'));
     }
     // These happen in the initiating gesture, not after a ticket network request.
-    this.context ??= new AudioContext({ latencyHint: 'interactive' });
-    const context = this.context;
+    this.releaseMedia();
+    const version = this.mediaVersion;
+    const context = this.context = new AudioContext({ latencyHint: 'interactive' });
+    const current = () => version === this.mediaVersion && context === this.context && !this.intentionalClose;
     const resume = context.resume();
-    this.update({ microphone: 'requesting', error: undefined });
+    this.update({ microphone: 'requesting', playback: 'idle', error: undefined });
     const microphone = navigator.mediaDevices.getUserMedia({
       audio: { channelCount: { ideal: 1 }, echoCancellation: true, noiseSuppression: true, autoGainControl: false },
       video: false,
+    }).then(stream => {
+      // A permission prompt can outlive close() and even a later connection.
+      if (current()) this.microphone = stream;
+      else stream.getTracks().forEach(track => track.stop());
+      return stream;
     });
     const base = this.options.workletBaseUrl ?? '/worklets';
-    this.mediaPromise = (async () => {
-      const stream = await microphone;
-      if (this.intentionalClose) { stream.getTracks().forEach(track => track.stop()); return; }
-      this.microphone = stream;
-      await Promise.all([resume, context.audioWorklet.addModule(`${base}/capture.js`), context.audioWorklet.addModule(`${base}/playback.js`)]);
-      if (this.intentionalClose) { stream.getTracks().forEach(track => track.stop()); return; }
+    const operation = (async () => {
+      const [stream] = await Promise.all([microphone, resume, context.audioWorklet.addModule(`${base}/capture.js`), context.audioWorklet.addModule(`${base}/playback.js`)]);
+      if (!current()) return;
       this.source = context.createMediaStreamSource(stream);
       this.capture = new AudioWorkletNode(context, 'nursebridge-capture', { channelCount: 1, outputChannelCount: [1] });
       this.playback = new AudioWorkletNode(context, 'nursebridge-playback', {
@@ -190,6 +217,7 @@ export class BrowserCall {
       this.capture.connect(this.silentSink).connect(context.destination);
       this.playback.connect(context.destination);
       this.capture.port.onmessage = ({ data }: MessageEvent<{ type: string; pcm?: ArrayBuffer }>) => {
+        if (!current()) return;
         if (data.type === 'frame' && data.pcm) {
           if (this.state.microphone === 'requesting') {
             this.update({ microphone: 'ready' });
@@ -205,30 +233,29 @@ export class BrowserCall {
           this.options.onEvent?.({ type: 'local-barge-in' });
         }
       };
-      this.playback.port.onmessage = ({ data }: MessageEvent<Record<string, unknown>>) => this.handlePlayback(data);
+      this.playback.port.onmessage = ({ data }: MessageEvent<Record<string, unknown>>) => { if (current()) this.handlePlayback(data); };
       this.capture.port.postMessage({ type: 'mute', muted: this.state.muted });
       this.playback.port.postMessage({ type: 'flush', controlEpoch: this.epoch, generation: this.generation, acknowledge: false });
       for (const track of stream.getAudioTracks()) track.onended = () => {
+        if (!current()) return;
         this.update({ microphone: 'error', error: 'Microphone disconnected. Human access remains available.' });
         this.sendControl({ type: 'media-ready', microphone: false, playback: this.state.playback === 'ready' });
       };
       context.onstatechange = () => {
-        if (context.state !== 'running' && !this.intentionalClose) {
-          this.update({ playback: 'blocked', error: 'Audio playback paused. Enable audio again to continue.' });
-          this.announceReadiness();
-        }
+        if (current()) this.updatePlaybackReadiness();
       };
       // Readiness follows the first captured PCM frame and playback worklet render tick.
       if (context.state !== 'running') this.update({ playback: 'blocked' });
     })().catch((error: unknown) => {
-      this.microphone?.getTracks().forEach(track => track.stop());
-      this.microphone = undefined;
+      if (!current()) return;
+      this.releaseMedia();
       const denied = error instanceof DOMException && error.name === 'NotAllowedError';
       this.update({ microphone: denied ? 'denied' : 'error', playback: 'error', error: denied ? 'Microphone permission was declined. You can still request a person.' : 'Audio could not start. Check microphone permissions and retry.' });
       this.sendControl({ type: 'media-ready', microphone: false, playback: false });
       throw error;
-    }).finally(() => { this.mediaPromise = undefined; });
-    return this.mediaPromise;
+    }).finally(() => { if (this.mediaPromise === operation) this.mediaPromise = undefined; });
+    this.mediaPromise = operation;
+    return operation;
   }
 
   mute(muted = true): void {
@@ -248,22 +275,48 @@ export class BrowserCall {
     this.connectionVersion++;
     clearTimeout(this.heartbeatTimer);
     clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
     this.socket?.close(1000, 'Participant closed connection');
     this.socket = undefined;
+    this.releaseMedia();
+    this.mediaPromise = undefined;
+    this.credits = 0;
+    this.agentActive = false;
+    this.gapReported = false;
+    this.epoch = 0;
+    this.generation = 0;
+    this.encoded = undefined;
+    this.localPending.clear();
+    this.pendingAgentFrames.clear();
+    this.update({ connection: 'closed', microphone: 'idle', playback: 'idle', error: undefined });
+  }
+
+  private releaseMedia(): void {
+    this.mediaVersion++;
     this.microphone?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+    if (this.capture) this.capture.port.onmessage = null;
+    if (this.playback) this.playback.port.onmessage = null;
     this.source?.disconnect();
     this.capture?.disconnect();
     this.playback?.disconnect();
     this.silentSink?.disconnect();
     if (this.context) { this.context.onstatechange = null; void this.context.close().catch(() => undefined); }
     this.context = undefined;
+    this.source = undefined;
     this.capture = undefined;
     this.playback = undefined;
+    this.silentSink = undefined;
     this.microphone = undefined;
-    this.encoded = undefined;
-    this.localPending.clear();
-    this.pendingAgentFrames.clear();
-    this.update({ connection: 'closed', microphone: 'idle', playback: 'idle' });
+    this.playbackReady = false;
+  }
+
+  private updatePlaybackReadiness(): void {
+    if (!this.context || this.intentionalClose) return;
+    const running = this.context.state === 'running';
+    this.update({ playback: running ? this.playbackReady ? 'ready' : 'idle' : 'blocked',
+      ...(!running ? { error: PLAYBACK_PAUSED } : this.state.error === PLAYBACK_PAUSED ? { error: undefined } : {}),
+    });
+    this.announceReadiness();
   }
 
   private update(patch: Partial<BrowserCallState>): void {
@@ -276,7 +329,7 @@ export class BrowserCall {
   }
 
   private sendMicrophone(pcm: ArrayBuffer): void {
-    if (this.role === 'observer' || this.state.connection !== 'connected') return;
+    if (this.role === 'observer' || this.state.connection !== 'connected' || this.socket?.readyState !== WebSocket.OPEN) return;
     if (pcm.byteLength !== AUDIO_FRAME_BYTES) {
       this.update({ error: 'Microphone produced an unsupported audio frame.' });
       return;
@@ -305,6 +358,7 @@ export class BrowserCall {
   private readSnapshot(value: unknown): void {
     if (!value || typeof value !== 'object') return;
     const snapshot = value as Record<string, unknown>;
+    if (snapshot.queueState === 'CLOSED' || snapshot.deleted === true) { this.close(); return; }
     if (snapshot.conversationOwner === 'NURSE' || snapshot.conversationOwner === 'NONE') this.agentActive = false;
     const epoch = Number(snapshot.controlEpoch);
     const generation = Number(snapshot.generation ?? snapshot.responseGeneration ?? 0);
@@ -315,7 +369,8 @@ export class BrowserCall {
   }
 
   private handleEvent(event: Record<string, unknown>): void {
-    if (event.type === 'snapshot') this.readSnapshot(event.snapshot);
+    if (event.type === 'snapshot' || event.type === 'authenticated') this.readSnapshot(event.snapshot);
+    if (event.type === 'deleted') this.close();
     if (event.type === 'audio-ack') this.credits = Math.min(20, this.credits + Math.max(0, Number(event.credits) || 0));
     if (event.type === 'flush') this.flush(Number(event.controlEpoch), Number(event.generation), true);
     if (event.type === 'agent-status') this.agentActive = event.status === 'speaking' || event.status === 'thinking';
@@ -354,8 +409,8 @@ export class BrowserCall {
 
   private handlePlayback(event: Record<string, unknown>): void {
     if (event.type === 'playback-ready') {
-      this.update({ playback: this.context?.state === 'running' ? 'ready' : 'blocked' });
-      this.announceReadiness();
+      this.playbackReady = true;
+      this.updatePlaybackReadiness();
     }
     if (event.type === 'consumed') {
       if (event.local === true) {
@@ -390,6 +445,7 @@ export class BrowserCall {
   }
 
   private async receiveEncoded(event: Record<string, unknown>): Promise<void> {
+    const mediaVersion = this.mediaVersion;
     const epoch = Number(event.controlEpoch);
     const generation = Number(event.generation);
     const reject = () => this.sendControl({ type: 'audio-ack', sequence: event.sequence ?? event.responseId, streamKind: AudioStreamKind.Agent, dropped: true });
@@ -399,7 +455,7 @@ export class BrowserCall {
       const bytes = Uint8Array.from(atob(event.data), character => character.charCodeAt(0));
       // decodeAudioData receives one complete encoded unit, never arbitrary stream fragments.
       const decoded = await this.context.decodeAudioData(bytes.buffer);
-      if (epoch !== this.epoch || generation < this.generation || this.intentionalClose) { reject(); return; }
+      if (mediaVersion !== this.mediaVersion || epoch !== this.epoch || generation < this.generation || this.intentionalClose) { reject(); return; }
       if (decoded.duration > 30 || decoded.duration <= 0) throw new Error('Encoded utterance duration exceeded');
       const samples = new Float32Array(decoded.length);
       for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
@@ -414,6 +470,7 @@ export class BrowserCall {
       this.encoded = job;
       this.fillEncoded(job);
     } catch {
+      if (mediaVersion !== this.mediaVersion || this.intentionalClose || epoch !== this.epoch || generation < this.generation) return;
       reject();
       this.update({ error: 'Speech playback failed. Read the captions or request a person.' });
       this.sendControl({ type: 'audio-gap', reason: 'encoded-audio-decode-failed', droppedFrames: 1 });
@@ -450,14 +507,23 @@ export class BrowserCall {
   }
 
   private scheduleReconnect(): void {
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
     if (!this.options.getReconnectTicket || this.reconnectAttempt >= 4 || this.intentionalClose) return;
+    const version = this.connectionVersion;
     const attempt = ++this.reconnectAttempt;
     this.update({ connection: 'reconnecting' });
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (version !== this.connectionVersion || this.intentionalClose) return;
       void this.options.getReconnectTicket!().then(({ ticket, url }) => {
-        if (!this.intentionalClose) return this.connect(ticket, url ?? this.url);
-      }).catch(() => {
-        if (!this.intentionalClose) {
+        if (version === this.connectionVersion && !this.intentionalClose) {
+          // openConnection owns failed authentication; only ticket acquisition
+          // failure is retried by the rejection callback below.
+          void this.openConnection(ticket, url ?? this.url).catch(() => undefined);
+        }
+      }, () => {
+        if (version === this.connectionVersion && !this.intentionalClose) {
           this.update({ connection: 'disconnected', error: 'Reconnection requires a new call-scoped ticket.' });
           this.scheduleReconnect();
         }
