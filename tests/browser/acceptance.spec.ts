@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
 import { attachAudioDiagnostics } from './helpers/audio-diagnostics';
+import { attachControlDiagnostics } from './helpers/control-diagnostics';
 import { watchTakeoverOutcomes } from './helpers/takeover-diagnostics';
 
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
@@ -86,6 +87,7 @@ test('visible intake preserves evidence and corrections, then relays both distin
   const errors: string[] = [];
   const nurseConsoleErrors: ConsoleMessage[] = [];
   const takeoverTraffic = watchTakeoverOutcomes(nurse.page);
+  let activeCallId: string | undefined;
   let nurseWorkspaceReady = false;
   caller.page.on('pageerror', error => errors.push(`caller:${error.message}`));
   nurse.page.on('pageerror', error => errors.push(`nurse:${error.message}`));
@@ -102,6 +104,7 @@ test('visible intake preserves evidence and corrections, then relays both distin
     expect(configuredSession.diagnostics, 'Enable test diagnostics only in the isolated local test environment').toBe(true);
     await invite(nurse.page, caller.page);
     const call = await join(caller.page);
+    activeCallId = call.id;
     expect(call.intakeState).toBe('NOT_STARTED');
     expect(call.queueState).toBe('WAITING');
     await expect(caller.page.getByText('Clinical use requires completed release approval. Do not enter patient information.')).toBeVisible();
@@ -181,6 +184,7 @@ test('visible intake preserves evidence and corrections, then relays both distin
     errors.push(...(await takeoverTraffic.unexpectedConsoleErrors(nurseConsoleErrors)).map(message => `nurse:${message}`));
     expect(errors).toEqual([]);
   } finally {
+    await attachControlDiagnostics(nurse.page, testInfo, baseURL, activeCallId);
     await takeoverTraffic.attach(testInfo);
     await attachAudioDiagnostics(caller.page, testInfo, 'caller');
     await attachAudioDiagnostics(nurse.page, testInfo, 'nurse');

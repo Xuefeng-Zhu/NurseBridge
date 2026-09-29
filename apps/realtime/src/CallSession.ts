@@ -432,11 +432,11 @@ export class CallSession extends DurableObject<Env>{
   if(frame.payload.length!==2400||frame.sampleRate!==24000)return socket.close(1008,'Expected 50 ms mono PCM16 at 24 kHz');
   this.send(socket,{type:'audio-ack',sequence:frame.sequence,streamKind:frame.streamKind,credits:1});
   if(frame.sequence<=a.lastSequence||frame.controlEpoch!==state.controlEpoch)return;
-  // Each frame carries 50ms of audio. Allow the existing 20-credit capture
-  // backlog to arrive together, then refill only at the real capture rate.
-  // A fixed arrival window wrongly closed healthy sockets after delivery jitter.
+  // Each frame carries 50ms of audio. Permit the 20-credit capture backlog plus
+  // one frame of arrival-phase slack: the next capture may arrive immediately
+  // after the delayed batch. The 21-frame budget still refills at only 20fps.
   const now=Date.now(),updatedAt=a.audioBudgetUpdatedAt??now;
-  a.audioBudgetMs=Math.min(1000,(a.audioBudgetMs??1000)+Math.max(0,now-updatedAt));
+  a.audioBudgetMs=Math.min(1050,(a.audioBudgetMs??1050)+Math.max(0,now-updatedAt));
   a.audioBudgetUpdatedAt=Math.max(now,updatedAt);
   if(a.audioBudgetMs<50){this.gap('Audio sender exceeded the realtime delivery limit.');socket.close(1008,'Audio rate exceeded');return;}
   a.audioBudgetMs-=50;

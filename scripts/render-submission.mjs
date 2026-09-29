@@ -44,8 +44,8 @@ function textAt(slide, left, top, copy) {
 
 // Recorded results from the 29 Sep 2026 polish pass. Update only after a new
 // full verification run, and keep docs/test-results.md consistent with the deck.
-textAt(6, 72, 158, '165');
-textAt(6, 450, 158, '173');
+textAt(6, 72, 158, '168');
+textAt(6, 450, 158, '177');
 textAt(6, 828, 158, '29');
 textAt(6, 72, 359, '29 Sep 2026 local regression run. 19 tooling tests also passed.\nThe regression run skipped one separate live-provider test.');
 textAt(6, 72, 489, 'Local real-provider proof');
@@ -81,7 +81,7 @@ const notes = [
   'Screenshot: artifacts/demo/source/human-handoff.png. Mock intake fixtures and actual browser audio transport are separate layers. The capture uses synthetic microphone inputs.',
   'Screenshot: artifacts/demo/source/nurse-evidence.png. Original fictional correction: I need to correct that: the headache started this morning, not yesterday. Supporting words establish provenance rather than medical accuracy.',
   'The AssemblyAI conversation uses configured Nebius Nemotron-3.5-Lightning. Independent extraction validates finalized caller evidence. The CallSession Durable Object controls consent and human takeover. D1 stores projections and R2 private exports.',
-  'Sources: docs/test-results.md and docs/evidence/local-live-voice-2026-09-29.json. Regression results: 165 unit, 173 Workers, 19 tooling, 29 browser, with one live-provider test skipped in that regression run. Separate 29 Sep local live test passed with recorded microphones: one finalized caller turn, one evidence-linked fact, an agent response after caller speech, non-silent human playback in both receiving worklets, and zero stale agent samples after takeover. That provider check predates the latest polish fixes. These are individual local observations, not reliability or latency guarantees. Provider API logical deletion is not proof of physical erasure or backup expiry. Public live activation still requires recording-control and device acceptance.',
+  'Sources: docs/test-results.md and docs/evidence/local-live-voice-2026-09-29.json. Regression results: 168 unit, 177 Workers, 19 tooling, 29 browser, with one live-provider test skipped in that regression run. Separate 29 Sep local live test passed with recorded microphones: one finalized caller turn, one evidence-linked fact, an agent response after caller speech, non-silent human playback in both receiving worklets, and zero stale agent samples after takeover. That provider check predates the latest polish fixes. These are individual local observations, not reliability or latency guarantees. Provider API logical deletion is not proof of physical erasure or backup expiry. Public live activation still requires recording-control and device acceptance.',
   'Proposed users and business model remain hypotheses. No customers, clinical partners, user interviews, measured time savings or clinical outcomes are claimed. Pending verification sources: docs/production-readiness.md, docs/phone-inbound.md and docs/safety-and-privacy.md.',
 ];
 for (let index = 0; index < notes.length; index++) deck.slides.items[index].speakerNotes.textFrame.setText(`${sharedNotes}\n${notes[index]}`);

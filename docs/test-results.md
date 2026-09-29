@@ -4,16 +4,16 @@
 
 The review branch based on `main` at `4ffafcb` includes bounded API requests, retryable workspace and case loading, serialized queue polling, isolated queue/detail failures, settings draft protection, accessible error/loading/not-found pages, and mobile layout improvements. Realtime recovery preserves closed calls and explicitly re-establishes human media after a disconnect without automatically returning audio to AI providers. Thirteen new Workers regressions cover these lifecycle fixes.
 
-Two additional timing defects were reproduced before repair: a caller action between the nurse's read, claim and takeover left the case waiting or claimed; a one-second microphone delivery backlog disconnected a valid 20fps stream. Takeover now refreshes and retries once only after a confirmed revision rejection, preserving ownership and cancellation and never retrying an ambiguous write. Audio now permits a bounded 20-frame backlog while limiting sustained capture to 20fps. Nine Workers regressions verify jitter, excessive traffic, clock rollback, stale frames and replacement sockets.
+Two additional timing defects were reproduced before repair: a caller action between the nurse's read, claim and takeover left the case waiting or claimed; a one-second microphone delivery backlog disconnected a valid 20fps stream. Takeover now refreshes and retries once only after a confirmed revision rejection, preserving ownership and cancellation and never retrying an ambiguous write. Audio now permits a bounded 20-frame backlog plus one frame of arrival-phase tolerance while limiting sustained capture to 20fps. Thirteen Workers regressions verify jitter, excessive traffic, clock rollback, stale frames and replacement sockets. Four of those regressions reproduced a further boundary defect: a delayed batch arriving 1ms or 49ms late caused the next correctly paced frame to be rejected. The final 21-frame cap preserves the 20fps refill and rejects excessive immediate or sustained traffic.
 
 | Executed check | Result |
 | --- | --- |
 | `pnpm typecheck` / `pnpm lint` | Pass |
-| `pnpm test` | 165 tests pass in 12 files |
-| `pnpm test:workers` | 173 tests pass in 9 files |
+| `pnpm test` | 168 tests pass in 12 files |
+| `pnpm test:workers` | 177 tests pass in 9 files |
 | `pnpm test:tooling` | 19 tests pass |
 | `pnpm build` | Audio worklets and Next.js/OpenNext Worker pass |
-| Isolated `pnpm test:e2e --skip-build` | 29 pass in 59.6 seconds; 1 opt-in live-provider test skipped |
+| Isolated `pnpm test:e2e --skip-build` | 29 pass in 58.7 seconds; 1 opt-in live-provider test skipped |
 | `pnpm demo --skip-build` on ports 8899/8900 | Fresh local runtime starts, workspace creation and fictional replay produce a nurse draft |
 | `git diff --check` | Pass |
 
@@ -21,7 +21,9 @@ The final browser suite passed against the current built app, including stale qu
 
 Remote `main` had a failed [Verify run 36542985041](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36542985041): static tests/build passed, but browser tests had an observation race during queued agent playback and a post-unmute audio dropout. The queued-playback assertion now checks both measurements in one snapshot. The first polish revision `98c75da` passed those audio assertions remotely but failed takeover, staying WAITING in [PR run 36547001172](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36547001172) and CLAIMED in [push run 36546985432](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36546985432). Both revision races were reproduced locally before the repair above. The jitter defect was independently reproduced; it is not established as the cause of the older post-unmute failure.
 
-CI successfully retained its allowlisted failure JSON in both remote runs. It now includes test locations/statuses/timing, numeric audio/state diagnostics, and known takeover status/error codes. Raw reports, screenshots, session cookies, traces, URLs and raw errors are excluded. Sanitization and recovered-conflict console handling have unit coverage. See [PR #10 checks](https://github.com/Xuefeng-Zhu/NurseBridge/pull/10/checks) for remote verification of subsequent revisions; the table above records local verification.
+Revision `d5235f2` passed all 29 browser tests in [push CI 36549656584](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36549656584), while [PR CI 36549661064](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36549661064) passed 28 and failed one active-call case-switching test after a mobile viewport change. The immediate post-unmute check, main acceptance, both revision races and phone tests passed. Both endpoints had subsequently advanced to epoch 4 with no human samples despite reporting connected/ready. This indicates a later interruption, but those diagnostics did not record its cause.
+
+CI successfully retained its allowlisted failure JSON. It includes test locations/statuses/timing, numeric audio/state diagnostics, known takeover status/error codes, and authoritative call control state with the last 20 allowlisted event kinds. Known audio-gap messages map to fixed cause codes; their text is never retained. Raw reports, screenshots, session cookies, traces, URLs and raw errors are excluded. Sanitization and recovered-conflict console handling have unit coverage. See [PR #10 checks](https://github.com/Xuefeng-Zhu/NurseBridge/pull/10/checks) for remote verification of subsequent revisions; the table above records local verification.
 
 The refreshed 80-second narrated mock walkthrough, editable seven-slide deck, selectable-text PDF and cover use current UI screenshots. These assets describe fictional data and distinguish transcript replay from the earlier local real-provider evidence. `pnpm demo` runs a fresh loopback-only mock runtime without reading provider credentials; it is a rehearsal tool, not a hosted judge URL. Source publication, hosted identity/provider gates, physical devices, real telephone acceptance and the event's signed-in submission form remain outstanding.
 

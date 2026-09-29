@@ -43,6 +43,8 @@ Phone transport converts Twilio's 8 kHz mono G.711 mu-law to/from the shared PCM
 
 WebSocket audio remains a bounded MVP transport. TCP head-of-line blocking makes packet loss stall newer audio; limited networks can cause underruns and visible gaps. Real carrier and physical-device acceptance is separate from the local protocol tests.
 
+Browser capture uses at most 20 outstanding frame credits. Each authenticated socket's ingress budget allows those 20 delayed 50 ms frames plus one frame of arrival-phase tolerance, for a maximum instantaneous allowance of 21 frames. The budget refills at 20 frames per second, caps idle credit at the same allowance, and never gains credit from clock rollback or an audio epoch change. This tolerates a delayed batch arriving just before the next ordinary capture without allowing sustained faster audio.
+
 ## Durability
 
 State and outbox insertion use synchronous SQLite transactions without network I/O. Ordered D1 writes require the previous projection checkpoint and no deletion tombstone. Retries cannot duplicate facts or resurrect deleted cases. Alarms handle retry, claim/handoff timeout, session bounds, and retention.

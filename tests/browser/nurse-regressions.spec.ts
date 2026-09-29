@@ -2,6 +2,7 @@ import { chromium, expect, test, type Browser, type BrowserContext, type Page } 
 import { resolve } from 'node:path';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
 import { attachAudioDiagnostics } from './helpers/audio-diagnostics';
+import { attachControlDiagnostics } from './helpers/control-diagnostics';
 import { watchTakeoverOutcomes } from './helpers/takeover-diagnostics';
 
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
@@ -104,6 +105,7 @@ test('reviewing another case during claim and conversation preserves active audi
   const takeoverTraffic = watchTakeoverOutcomes(nurse.page);
   const pageErrors: string[] = [];
   let releaseClaim: (() => void) | undefined;
+  let activeCallId: string | undefined;
   for (const participant of [nurse, caller]) participant.page.on('pageerror', error => pageErrors.push(error.message));
   try {
     const session = await workspace(nurse.page);
@@ -116,6 +118,7 @@ test('reviewing another case during claim and conversation preserves active audi
     const callCreated = caller.page.waitForResponse(response => response.url().endsWith('/api/calls') && response.request().method() === 'POST');
     await caller.page.getByRole('button', { name: 'Join call queue' }).click();
     const { call } = await (await callCreated).json() as { call: CallSnapshot };
+    activeCallId = call.id;
     await caller.page.getByRole('button', { name: 'Skip automated intake · request a person' }).click();
     await caller.page.getByRole('button', { name: 'Enable microphone & output for handoff' }).click();
     await expect.poll(async () => (await snapshot(caller.page, call.id)).mediaReady.caller).toBe(true);
@@ -192,6 +195,7 @@ test('reviewing another case during claim and conversation preserves active audi
     expect(pageErrors).toEqual([]);
     expect((await post(nurse.page, `/api/calls/${another.id}/end`)).ok()).toBe(true);
   } finally {
+    await attachControlDiagnostics(nurse.page, testInfo, baseURL, activeCallId);
     releaseClaim?.();
     await takeoverTraffic.attach(testInfo);
     await attachAudioDiagnostics(caller.page, testInfo, 'caller');

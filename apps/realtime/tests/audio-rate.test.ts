@@ -36,7 +36,7 @@ function sender(internal: Internal, now: number, transport?: 'phone') {
 }
 
 describe('bounded microphone arrival jitter', () => {
-  it.each(['browser', 'phone'] as const)('accepts 20fps capture after a one-second delivery backlog on %s transport', async transport => {
+  it.each((['browser', 'phone'] as const).flatMap(transport => [0, 1, 49].map(arrivalDelay => ({ transport, arrivalDelay }))))('accepts 20fps capture after a delayed backlog plus $arrivalDelay ms arrival phase on $transport transport', async ({ transport, arrivalDelay }) => {
     await exercise(async (internal, start) => {
       const clock = vi.spyOn(Date, 'now'), peer = sender(internal, start, transport === 'phone' ? transport : undefined);
       try {
@@ -45,7 +45,9 @@ describe('bounded microphone arrival jitter', () => {
         for (let sequence = 1; sequence <= 20; sequence++) {
           clock.mockReturnValue(start + sequence * 50); await peer.send(sequence);
         }
-        clock.mockReturnValue(start + 2000);
+        // The last delayed frame was captured at2000ms. Its delivery can land
+        // just before the next ordinary capture at2050ms, not exactly in phase.
+        clock.mockReturnValue(start + 2000 + arrivalDelay);
         for (let sequence = 21; sequence <= 40; sequence++) await peer.send(sequence);
         for (let sequence = 41; sequence <= 60; sequence++) {
           clock.mockReturnValue(start + 2000 + (sequence - 40) * 50); await peer.send(sequence);
@@ -61,12 +63,12 @@ describe('bounded microphone arrival jitter', () => {
       const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
       try {
         const burst = sender(internal, start, transport === 'phone' ? transport : undefined);
-        for (let sequence = 1; sequence <= 20; sequence++) await burst.send(sequence);
+        for (let sequence = 1; sequence <= 21; sequence++) await burst.send(sequence);
         expect(burst.socket.close).not.toHaveBeenCalled();
-        await burst.send(21);
+        await burst.send(22);
         expect(burst.socket.close).toHaveBeenCalledExactlyOnceWith(1008, 'Audio rate exceeded');
         const fast = sender(internal, start, transport === 'phone' ? transport : undefined);
-        for (let sequence = 1; sequence <= 40; sequence++) {
+        for (let sequence = 1; sequence <= 42; sequence++) {
           clock.mockReturnValue(start + (sequence - 1) * 25); await fast.send(sequence);
         }
         expect(fast.socket.close).toHaveBeenCalledExactlyOnceWith(1008, 'Audio rate exceeded');
@@ -74,15 +76,15 @@ describe('bounded microphone arrival jitter', () => {
     });
   });
 
-  it('does not accumulate more than one second of burst credit while idle', async () => {
+  it('does not accumulate more than the 20-frame backlog plus one phase frame while idle', async () => {
     await exercise(async (internal, start) => {
       const clock = vi.spyOn(Date, 'now').mockReturnValue(start), peer = sender(internal, start);
       try {
         await peer.send(1);
         clock.mockReturnValue(start + 10000);
-        for (let sequence = 2; sequence <= 21; sequence++) await peer.send(sequence);
+        for (let sequence = 2; sequence <= 22; sequence++) await peer.send(sequence);
         expect(peer.socket.close).not.toHaveBeenCalled();
-        await peer.send(22);
+        await peer.send(23);
         expect(peer.socket.close).toHaveBeenCalledExactlyOnceWith(1008, 'Audio rate exceeded');
       } finally { clock.mockRestore(); }
     });
@@ -95,9 +97,9 @@ describe('bounded microphone arrival jitter', () => {
         for (let sequence = 1; sequence <= 10; sequence++) await peer.send(sequence);
         clock.mockReturnValue(start - 500); await peer.send(11);
         clock.mockReturnValue(start);
-        for (let sequence = 12; sequence <= 20; sequence++) await peer.send(sequence);
+        for (let sequence = 12; sequence <= 21; sequence++) await peer.send(sequence);
         expect(peer.socket.close).not.toHaveBeenCalled();
-        await peer.send(21);
+        await peer.send(22);
         expect(peer.socket.close).toHaveBeenCalledExactlyOnceWith(1008, 'Audio rate exceeded');
       } finally { clock.mockRestore(); }
     });
@@ -110,9 +112,9 @@ describe('bounded microphone arrival jitter', () => {
         for (let sequence = 1; sequence <= 10; sequence++) await peer.send(sequence);
         for (let repeat = 0; repeat < 40; repeat++) { await peer.send(10); await peer.send(11, internal.state.controlEpoch + 1); }
         internal.state.controlEpoch++;
-        for (let sequence = 11; sequence <= 20; sequence++) await peer.send(sequence);
+        for (let sequence = 11; sequence <= 21; sequence++) await peer.send(sequence);
         expect(peer.socket.close).not.toHaveBeenCalled();
-        await peer.send(21);
+        await peer.send(22);
         expect(peer.socket.close).toHaveBeenCalledExactlyOnceWith(1008, 'Audio rate exceeded');
       } finally { clock.mockRestore(); }
     });
@@ -123,12 +125,12 @@ describe('bounded microphone arrival jitter', () => {
       const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
       try {
         const original = sender(internal, start), replacement = sender(internal, start);
-        for (let sequence = 1; sequence <= 20; sequence++) { await original.send(sequence); await replacement.send(sequence); }
+        for (let sequence = 1; sequence <= 21; sequence++) { await original.send(sequence); await replacement.send(sequence); }
         expect(original.socket.close).not.toHaveBeenCalled();
         expect(replacement.socket.close).not.toHaveBeenCalled();
-        await replacement.send(21);
+        await replacement.send(22);
         expect(replacement.socket.close).toHaveBeenCalledExactlyOnceWith(1008, 'Audio rate exceeded');
-        await original.send(21);
+        await original.send(22);
         expect(original.socket.close).toHaveBeenCalledExactlyOnceWith(1008, 'Audio rate exceeded');
       } finally { clock.mockRestore(); }
     });
