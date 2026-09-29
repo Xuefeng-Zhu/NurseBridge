@@ -9,10 +9,13 @@ import { connectVoiceAgent, deleteVoiceAgentSession, type VoiceAgent, type Voice
 import { liveActivationIssues } from './providers/readiness';
 import { intakePrompt, INTAKE_TOOLS, explicitRequest } from './intake-agent';
 import { extract } from './providers/nebius';
-import { newState, transition, applyFacts, CommandError, fail, type CallState, type Command, type Role } from './state';
+import { newState, transition, requestHandoff, applyFacts, CommandError, fail, type CallState, type Command, type Role } from './state';
 import type { Env } from './env';
+import { PhoneTransport } from './telephony/transport';
+import { terminatePhoneCall, releasePhoneReservation } from './telephony/twilio';
 
-type Attachment={authenticated:boolean;role?:Role;participantId?:string;expiresAt:number;lastHeartbeat:number;mediaReady:boolean;lastSequence:number;audioWindowStart?:number;audioFrames?:number;pending:{sequence:number;streamKind:number;responseId?:number}[]};
+type Attachment={authenticated:boolean;role?:Role;participantId?:string;expiresAt:number;lastHeartbeat:number;mediaReady:boolean;lastSequence:number;audioWindowStart?:number;audioFrames?:number;pending:{sequence:number;streamKind:number;responseId?:number}[];transport?:'phone';phone?:{streamSid:string;lastEventSequence:number;nextAudioSequence:number;lastTimestamp:number;captureReady:boolean;playbackReady:boolean}};
+type PhoneBinding={provider:'twilio';workspaceId:string;accountSid:string;providerCallSid:string;streamTokenHash:string;streamTokenExpiresAt:number;consumed:boolean;streamSid?:string;terminated:boolean;terminationPending:boolean;terminationAttempts:number;terminationRetryAt?:number;reservationReleasePending?:boolean;consentDecision?:'accepted'|'declined'|'unavailable';consentCommandId?:string};
 type Ticket={workspaceId:string;participantId:string;role:Role;expiresAt:number;audience:'nursebridge-realtime';callId:string};
 const errorResult=(error:unknown):RpcResult=>error instanceof CommandError?{ok:false,status:error.status,error:error.message,code:error.code}:{ok:false,status:503,error:'The session is temporarily unavailable.',code:'session_unavailable'};
 const hash=async(value:string)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),b=>b.toString(16).padStart(2,'0')).join('');
@@ -32,7 +35,7 @@ export class CallSession extends DurableObject<Env>{
  private voiceQueueBytes=0;
  private voiceDrain=false;
  private connecting=false;
- private projectionBusy=false;
+ private projectionTask?:Promise<void>;
  private extractionBusy=false;
  private extractionAbort?:AbortController;
  private extractionAgain=false;
@@ -41,12 +44,24 @@ export class CallSession extends DurableObject<Env>{
  private currentSpeech?:{epoch:number;generation:number;responseId:number;startedAt:number;playbackMeasured:boolean};
  private reconnectAt=0;
  private projectionRetryAt=0;
+ private phone?:PhoneBinding;
+ private phoneTransports=new Map<WebSocket,PhoneTransport>();
+ private phoneTerminationBusy=false;
  constructor(ctx:DurableObjectState,env:Env){
-  super(ctx,env);this.store=new SessionStore(ctx.storage);this.state=this.store.load();this.store.storage.sql.exec("UPDATE provider_connections SET status='manual_reconciliation_required' WHERE status='connecting'");
+  super(ctx,env);this.store=new SessionStore(ctx.storage);this.state=this.store.load();
+  this.store.storage.sql.exec('CREATE TABLE IF NOT EXISTS phone_binding(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL)');
+  const phoneRow=this.store.storage.sql.exec<{body:string}>('SELECT body FROM phone_binding WHERE id=1').toArray()[0];if(phoneRow)this.phone=JSON.parse(phoneRow.body) as PhoneBinding;
+  this.store.storage.sql.exec("UPDATE provider_connections SET status='manual_reconciliation_required' WHERE status='connecting'");
   if(this.state&&!this.state.deleted&&(this.state.provider.connected||this.state.participants.caller||this.state.participants.nurse)){
    this.mutate(s=>{s.provider.connected=false;s.provider.warning='Session restarted; a transcription gap may be present.';s.providerSession.status='interrupted';s.aiStatus='stopped';s.conversationOwner='NONE';s.waitingReason='technical_failure';s.humanRequested=true;s.controlEpoch++;s.responseGeneration++;s.participants={caller:false,nurse:false};s.mediaReady={caller:false,nurse:false};s.queueState=s.claim?'CLAIMED':'WAITING';delete s.handoff;s.warnings.push('Session restarted. Automated intake will not restart; reconnect for nurse help.');s.escalations.push({id:crypto.randomUUID(),reason:'technical_failure',message:'Call interrupted by restart; nurse help requested.',at:Date.now()});},'recovery','Session recovered from durable storage.');
    for(const socket of ctx.getWebSockets())socket.close(1012,'Reconnect with a new connection ticket');
   }
+  // A phone cannot obtain a fresh browser ticket after object recovery. End its
+  // carrier leg durably instead of keeping an inaudible, billable call alive.
+  if(this.phone&&!this.phone.terminated&&this.phone.consumed){
+   if(this.state&&!this.state.deleted&&this.state.queueState!=='CLOSED')this.mutate(s=>{s.queueState='CLOSED';s.conversationOwner='NONE';s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;delete s.handoff;},'phone-restart','Phone media interrupted by restart; carrier call is ending.');
+   this.requestPhoneTermination();this.ctx.waitUntil(this.flushProjection());
+  }else if(this.phone?.terminationPending||this.phone?.reservationReleasePending)this.ctx.waitUntil(this.retryPhoneTermination());
  }
  private mutate(update:(state:CallState)=>void,type:string,message:string){
   if(!this.state)fail(404,'not_found','Call not found.');
@@ -55,7 +70,17 @@ export class CallSession extends DurableObject<Env>{
  }
  private checkpoint(){if(this.state)this.store.save(this.state);}
  private visibleSnapshot(){return this.state?structuredClone(this.state):undefined;}
- private send(socket:WebSocket,message:unknown){try{socket.send(JSON.stringify(message));}catch{/* Disconnected; close handler updates durable state. */}}
+ private send(socket:WebSocket,message:unknown){
+  const a=socket.deserializeAttachment() as Attachment|null;
+  if(a?.transport==='phone'){
+   const input=message as {type?:string;controlEpoch?:number;generation?:number};
+   if(input.type==='flush'&&typeof input.controlEpoch==='number'&&typeof input.generation==='number'){
+    try{this.phoneTransports.get(socket)?.flush(input.controlEpoch,input.generation);}catch{this.phoneTransportFailure(socket);}
+   }
+   return;
+  }
+  try{socket.send(JSON.stringify(message));}catch{/* Disconnected; close handler updates durable state. */}
+ }
  private broadcast(message:unknown){for(const socket of this.ctx.getWebSockets()){const a=socket.deserializeAttachment() as Attachment|null;if(a?.authenticated&&a.expiresAt>Date.now())this.send(socket,message);}}
  private publish(){this.broadcast({type:'snapshot',snapshot:this.visibleSnapshot()});this.ctx.waitUntil(this.flushProjection());this.ctx.waitUntil(this.scheduleAlarm());}
  private scoped(workspaceId:string){if(!this.state||this.state.workspaceId!==workspaceId)fail(404,'not_found','Call not found.');if(this.state!.deleted)fail(410,'deleted','Call has been deleted.');return this.state!;}
@@ -73,7 +98,7 @@ export class CallSession extends DurableObject<Env>{
  }
 
 
- async initialize(input:{callId:string;workspaceId:string;callerParticipantId:string;template?:IntakeTemplate;mode:'mock'|'live';createdAt?:number;expiresAt?:number}):Promise<RpcResult>{
+ async initialize(input:{callId:string;workspaceId:string;callerParticipantId:string;template?:IntakeTemplate;mode:'mock'|'live';channel?:'browser'|'phone';createdAt?:number;expiresAt?:number}):Promise<RpcResult>{
   try{
    if(!/^[a-zA-Z0-9_-]{8,100}$/.test(input.callId)||!input.workspaceId||!input.callerParticipantId)fail(400,'invalid_call','Invalid call initialization.');
    if(this.state){this.scoped(input.workspaceId);if(this.state.callerParticipantId!==input.callerParticipantId)fail(403,'forbidden','Call owner mismatch.');}
@@ -86,10 +111,95 @@ export class CallSession extends DurableObject<Env>{
    await this.scheduleAlarm();return{ok:true,snapshot:this.visibleSnapshot()};
   }catch(error){return errorResult(error);}
  }
+ async initializePhone(input:{callId:string;workspaceId:string;callerParticipantId:string;mode:'mock'|'live';template?:IntakeTemplate;provider:'twilio';accountSid:string;providerCallSid:string;streamTokenHash:string;streamTokenExpiresAt:number;createdAt?:number;expiresAt?:number}):Promise<RpcResult>{
+  try{
+   if(input.provider!=='twilio'||!/^AC[0-9a-f]{32}$/i.test(input.accountSid)||!/^CA[0-9a-f]{32}$/i.test(input.providerCallSid)||!/^[0-9a-f]{64}$/.test(input.streamTokenHash)||!Number.isFinite(input.streamTokenExpiresAt))fail(400,'invalid_phone','Invalid phone initialization.');
+   const receipt=await this.env.DB.prepare('SELECT terminal_at FROM inbound_calls WHERE provider=? AND account_sid=? AND provider_call_sid=?').bind(input.provider,input.accountSid,input.providerCallSid).first<{terminal_at:number|null}>();
+   if(receipt?.terminal_at!==null&&receipt?.terminal_at!==undefined)fail(409,'closed','Phone call has already ended.');
+   if(this.state&&this.state.channel!=='phone')fail(409,'phone_binding_mismatch','An existing browser call cannot become a phone call.');
+   if(this.phone){
+    if(this.phone.workspaceId!==input.workspaceId||this.phone.accountSid!==input.accountSid||this.phone.providerCallSid!==input.providerCallSid||this.phone.streamTokenHash!==input.streamTokenHash||this.phone.streamTokenExpiresAt!==input.streamTokenExpiresAt)fail(409,'phone_binding_mismatch','Phone initialization does not match the existing binding.');
+    if(this.phone.terminated||this.phone.terminationPending)fail(409,'closed','Phone call has ended.');
+   }else if(input.streamTokenExpiresAt<=Date.now()||input.streamTokenExpiresAt>Date.now()+300000)fail(400,'phone_token_expiry','Phone stream token must expire within five minutes.');
+   if(!/^[a-zA-Z0-9_-]{8,100}$/.test(input.callId)||!input.workspaceId||!input.callerParticipantId||input.mode!==this.env.PROVIDER_MODE)fail(400,'invalid_phone','Invalid phone initialization.');
+   if(!this.phone){this.phone={provider:'twilio',workspaceId:input.workspaceId,accountSid:input.accountSid,providerCallSid:input.providerCallSid,streamTokenHash:input.streamTokenHash,streamTokenExpiresAt:input.streamTokenExpiresAt,consumed:false,terminated:false,terminationPending:false,terminationAttempts:0};this.savePhone();}
+   const initialized=await this.initialize({...input,channel:'phone'});await this.scheduleAlarm();return initialized;
+  }catch(error){return errorResult(error);}
+ }
+ async phoneConsent(input:{workspaceId:string;providerCallSid:string;commandId:string;decision:'accepted'|'declined'|'unavailable';recordingAccepted?:boolean;disclosureVersion?:string}):Promise<RpcResult>{
+  try{
+   const state=this.scoped(input.workspaceId);this.assertPhone(input.workspaceId,input.providerCallSid);
+   if(!input.commandId||input.commandId.length>120||!['accepted','declined','unavailable'].includes(input.decision))fail(400,'invalid_phone_consent','Invalid phone consent decision.');
+   if(this.phone!.consentDecision){
+    if(this.phone!.consentDecision!==input.decision||this.phone!.consentCommandId!==input.commandId)fail(409,'phone_consent_mismatch','The phone disclosure already has a decision.');
+    return{ok:true,snapshot:this.visibleSnapshot()};
+   }
+   if(state.queueState==='CLOSED'||this.phone!.terminated||this.phone!.terminationPending)fail(409,'closed','Phone call has ended.');
+   let result:RpcResult;
+   if(input.decision==='unavailable'){
+    this.mutate(s=>{requestHandoff(s,'technical_failure','Automated phone intake is unavailable. The caller is waiting for a nurse.',Date.now());s.controlRevision++;},'phone-intake-unavailable','Phone intake unavailable; nurse help requested.');this.abortAi('phone-intake-unavailable',false);this.stopProvider();this.publish();result={ok:true,snapshot:this.visibleSnapshot()};
+   }else{
+    if(input.decision==='accepted'&&state.mode!=='live')fail(503,'phone_ai_unavailable','Automated phone intake requires configured live speech.');
+    result=await this.command({workspaceId:input.workspaceId,participantId:state.callerParticipantId,role:'caller',commandId:input.commandId,type:'consent',payload:{accepted:input.decision==='accepted',recordingAccepted:input.recordingAccepted,recordingDisclosureVersion:input.disclosureVersion}});
+   }
+   if(result.ok){this.phone!.consentDecision=input.decision;this.phone!.consentCommandId=input.commandId;this.savePhone();}
+   return result;
+  }catch(error){return errorResult(error);}
+ }
+ async phoneStatus(input:{workspaceId:string;providerCallSid:string;status:string;eventId?:string}):Promise<RpcResult>{
+  try{
+   if(!this.phone&&this.state?.deleted&&this.state.workspaceId===input.workspaceId)return{ok:true};
+   this.assertPhone(input.workspaceId,input.providerCallSid);
+   if(!['queued','ringing','in-progress','completed','canceled','failed','busy','no-answer'].includes(input.status))fail(400,'invalid_phone_status','Unknown phone status.');
+   if(['completed','canceled','failed','busy','no-answer'].includes(input.status)){
+    this.phone!.terminated=true;this.phone!.terminationPending=false;this.phone!.reservationReleasePending=true;delete this.phone!.terminationRetryAt;this.savePhone();this.finishPhoneCall('Phone caller disconnected.');await this.retryPhoneTermination();
+   }
+   return{ok:true,...(!this.state?.deleted?{snapshot:this.visibleSnapshot()}: {})};
+  }catch(error){return errorResult(error);}
+ }
+ private assertPhone(workspaceId:string,callSid:string){if(!this.phone||this.phone.workspaceId!==workspaceId||this.phone.providerCallSid!==callSid)fail(404,'phone_not_found','Phone call not found.');}
+ private savePhone(){if(this.phone)this.store.storage.sql.exec('INSERT INTO phone_binding(id,body) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body',JSON.stringify(this.phone));}
+ private requestPhoneTermination(){
+  if(!this.phone||this.phone.terminated)return;
+  this.phone.terminationPending=true;this.savePhone();this.ctx.waitUntil(this.retryPhoneTermination());this.ctx.waitUntil(this.scheduleAlarm());
+ }
+ private async retryPhoneTermination(){
+  if(!this.phone||!this.phone.terminationPending&&!this.phone.reservationReleasePending||this.phoneTerminationBusy||(this.phone.terminationRetryAt??0)>Date.now())return;
+  this.phoneTerminationBusy=true;
+  try{
+   if(this.phone.terminationPending&&!this.phone.terminated){await terminatePhoneCall(this.env,this.phone.providerCallSid);if(this.phone){this.phone.terminated=true;this.phone.terminationPending=false;this.phone.reservationReleasePending=true;this.savePhone();}}
+   if(this.phone?.reservationReleasePending&&this.state){await releasePhoneReservation(this.env,this.state.id);if(this.phone)this.phone.reservationReleasePending=false;}
+   if(this.phone)delete this.phone.terminationRetryAt;
+  }
+  catch{if(this.phone){this.phone.terminationAttempts++;this.phone.terminationRetryAt=Date.now()+Math.min(300000,10000*2**Math.min(this.phone.terminationAttempts-1,5));}}
+  finally{this.savePhone();this.scrubDeletedPhone();this.phoneTerminationBusy=false;await this.scheduleAlarm();}
+ }
+ private scrubDeletedPhone(){
+  if(!this.state?.deleted||!this.phone)return;
+  if(this.phone.terminated&&!this.phone.reservationReleasePending){this.store.storage.sql.exec('DELETE FROM phone_binding');this.phone=undefined;return;}
+  // Retain only the identifiers required for authenticated status handling and
+  // carrier termination until that external side effect succeeds.
+  this.phone.accountSid='';this.phone.streamTokenHash='';this.phone.streamTokenExpiresAt=0;delete this.phone.streamSid;delete this.phone.consentDecision;delete this.phone.consentCommandId;this.savePhone();
+ }
+ private finishPhoneCall(message:string){
+  if(this.state&&!this.state.deleted&&this.state.queueState!=='CLOSED'){
+   this.mutate(s=>{s.queueState='CLOSED';s.conversationOwner='NONE';s.aiStatus='stopped';s.participants.caller=false;s.mediaReady.caller=false;s.controlEpoch++;s.responseGeneration++;s.controlRevision++;delete s.handoff;},'phone-ended',message);
+   this.abortAi('phone-ended',false);this.stopProvider();this.publish();
+  }
+  for(const [socket,transport] of this.phoneTransports){transport.close();this.phoneTransports.delete(socket);}
+  for(const socket of this.ctx.getWebSockets()){try{socket.close(1000,'Phone call ended');}catch{}}
+  this.requestPhoneTermination();
+ }
+ private phoneTransportFailure(socket:WebSocket){
+  this.phoneTransports.get(socket)?.close();this.phoneTransports.delete(socket);
+  try{socket.close(1008,'Phone media unavailable');}catch{}
+  this.finishPhoneCall('Phone media interrupted; carrier call is ending.');
+ }
  async snapshot(workspaceId:string):Promise<RpcResult>{try{this.scoped(workspaceId);return{ok:true,snapshot:this.visibleSnapshot()};}catch(error){return errorResult(error);}}
  async issueTicket(input:{workspaceId:string;participantId:string;role:Role}):Promise<RpcResult>{
   try{
    const state=this.scoped(input.workspaceId);if(state.queueState==='CLOSED')fail(409,'closed','Call has ended.');
+   if(this.phone&&input.role==='caller')fail(403,'phone_caller','Phone callers connect through the authenticated carrier stream.');
    if(input.role==='caller'&&state.callerParticipantId!==input.participantId)fail(403,'forbidden','Caller identity mismatch.');
    if(!['caller','nurse','observer','admin'].includes(input.role))fail(403,'forbidden','Invalid connection role.');
    const ticket=token();const ticketHash=await hash(ticket);const expiresAt=Date.now()+60000;
@@ -106,7 +216,7 @@ export class CallSession extends DurableObject<Env>{
    if(prior){if(prior.participant_id!==command.participantId||prior.request_hash!==requestHash)fail(409,'command_mismatch','Command ID was already used for a different request.');return JSON.parse(prior.body) as RpcResult;}
    const fixtureText=command.payload?.text;
    if(command.type==='mock-turn'&&(typeof fixtureText!=='string'||fixtureText.length>6000))fail(400,'invalid_fixture','A bounded fictional transcript is required.');
-   if(command.type==='consent'&&command.payload?.accepted===true&&this.state!.mode==='live'&&liveActivationIssues(this.env).length)fail(503,'live_activation_blocked','Voice Agent requires verified Nemotron compatibility and provider recording controls. Request a nurse instead.');
+   if(command.type==='consent'&&command.payload?.accepted===true&&this.state!.mode==='live'&&liveActivationIssues(this.phone?{...this.env,FICTIONAL_LIVE_TEST:undefined}:this.env).length)fail(503,'live_activation_blocked','Voice Agent requires verified Nemotron compatibility and provider recording controls. Request a nurse instead.');
    const next=structuredClone(this.state!);
    this.ctx.storage.transactionSync(()=>{
     transition(next,command,Date.now());
@@ -136,6 +246,7 @@ export class CallSession extends DurableObject<Env>{
     const result={ok:true,snapshot:next};this.store.storage.sql.exec('INSERT INTO commands(id,participant_id,request_hash,body) VALUES(?,?,?,?)',command.commandId,command.participantId,requestHash,JSON.stringify(result));
    });this.state=next;
    if(['end','delete'].includes(command.type)||command.type==='request-human'&&next.conversationOwner!=='NURSE'||command.type==='consent'&&!next.consent){this.abortAi(command.type,false);this.stopProvider();}
+   if(['end','delete'].includes(command.type))this.requestPhoneTermination();
    if(command.type==='takeover'){this.abortAi('takeover',true);this.stopProvider();this.ctx.waitUntil(this.beginHandoff());}
    if(command.type==='consent'&&next.consent)this.ctx.waitUntil(this.startIntake());
    if(command.type==='mock-turn'){
@@ -153,6 +264,7 @@ export class CallSession extends DurableObject<Env>{
   try{this.scoped(input.workspaceId);const row=this.store.storage.sql.exec<{object_key:string}>('SELECT object_key FROM export_reservations WHERE id=?',input.exportId).toArray()[0];if(row?.object_key!==input.key)fail(404,'export_missing','Export reservation not found.');this.store.storage.sql.exec('UPDATE export_reservations SET status=? WHERE id=?','complete',input.exportId);return{ok:true};}catch(error){await this.env.EXPORTS?.delete(input.key);return errorResult(error);}
  }
  async fetch(request:Request):Promise<Response>{
+  if(new URL(request.url).pathname===`/phone/connect/${this.state?.id}`)return this.fetchPhone(request);
   if(!this.state||this.state.deleted||this.state.queueState==='CLOSED')return new Response('Call unavailable',{status:404});
   if(!this.env.ALLOWED_ORIGINS.split(',').map(o=>o.trim()).includes(request.headers.get('Origin')??''))return new Response('Origin not allowed',{status:403});
   if(this.ctx.getWebSockets().length>=12)return new Response('Connection limit',{status:429});
@@ -162,8 +274,87 @@ export class CallSession extends DurableObject<Env>{
   setTimeout(()=>{const a=server.deserializeAttachment() as Attachment|null;if(!a?.authenticated){try{server.close(1008,'Authentication timed out');}catch{}}},3000);
   return new Response(null,{status:101,webSocket:client});
  }
+ async fetchPhone(request:Request):Promise<Response>{
+  if(request.method!=='GET'||request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return new Response('WebSocket required',{status:426});
+  if(!this.state||this.state.deleted||this.state.queueState==='CLOSED'||!this.phone||this.phone.terminated||this.phone.terminationPending||this.phone.consumed||this.phone.streamTokenExpiresAt<Date.now())return new Response('Phone call unavailable',{status:404});
+  if(this.ctx.getWebSockets().length>=12)return new Response('Connection limit',{status:429});
+  const pair=new WebSocketPair();const [client,server]=Object.values(pair) as [WebSocket,WebSocket];this.ctx.acceptWebSocket(server);
+  const attachment:Attachment={transport:'phone',authenticated:false,expiresAt:Date.now()+3000,lastHeartbeat:Date.now(),mediaReady:false,lastSequence:-1,pending:[]};server.serializeAttachment(attachment);
+  setTimeout(()=>{const a=server.deserializeAttachment() as Attachment|null;if(!a?.authenticated){try{server.close(1008,'Phone start timed out');}catch{}}},3000);
+  return new Response(null,{status:101,webSocket:client});
+ }
+ private async receivePhoneMessage(socket:WebSocket,a:Attachment,message:string|ArrayBuffer){
+  try{
+   if(typeof message!=='string'||message.length>16000)throw new Error('Invalid phone message');
+   if(!this.state||this.state.deleted||this.state.queueState==='CLOSED'||!this.phone||this.phone.terminated||this.phone.terminationPending||a.expiresAt<Date.now())throw new Error('Inactive phone call');
+   const input=JSON.parse(message) as {event?:string;sequenceNumber?:string;streamSid?:string;protocol?:string;version?:string;start?:{accountSid?:string;callSid?:string;streamSid?:string;customParameters?:{token?:string};mediaFormat?:{encoding?:string;sampleRate?:number;channels?:number}};media?:{track?:string;timestamp?:string;payload?:string};mark?:{name?:string};dtmf?:{track?:string;digit?:string};stop?:{accountSid?:string;callSid?:string}};
+   if(!a.authenticated){
+    if(input.event==='connected'&&input.protocol==='Call'&&input.version==='1.0.0')return;
+    const start=input.start;const nonce=start?.customParameters?.token;
+    if(input.event!=='start'||!start||typeof nonce!=='string'||nonce.length<32||nonce.length>256||start.accountSid!==this.phone.accountSid||start.callSid!==this.phone.providerCallSid||!/^MZ[0-9a-f]{32}$/i.test(start.streamSid??'')||input.streamSid&&input.streamSid!==start.streamSid||start.mediaFormat?.encoding!=='audio/x-mulaw'||start.mediaFormat.sampleRate!==8000||start.mediaFormat.channels!==1)throw new Error('Invalid phone start');
+    const sequence=Number(input.sequenceNumber);if(!Number.isSafeInteger(sequence)||sequence<1)throw new Error('Invalid sequence');
+    let authenticated=false;
+    await this.ctx.blockConcurrencyWhile(async()=>{
+     const digest=await hash(nonce);
+     if(!this.phone||this.phone.consumed||this.phone.terminated||this.phone.terminationPending||this.phone.streamTokenExpiresAt<Date.now()||digest!==this.phone.streamTokenHash||!this.state||this.state.deleted||this.state.queueState==='CLOSED')return;
+     this.phone.consumed=true;this.phone.streamSid=start.streamSid!;this.savePhone();
+     a={...a,authenticated:true,role:'caller',participantId:this.state.callerParticipantId,expiresAt:this.state.callDeadlineAt,lastHeartbeat:Date.now(),phone:{streamSid:start.streamSid!,lastEventSequence:sequence,nextAudioSequence:0,lastTimestamp:-1,captureReady:false,playbackReady:false}};socket.serializeAttachment(a);
+     const transport=new PhoneTransport(start.streamSid!,socket);this.phoneTransports.set(socket,transport);
+     this.mutate(s=>{s.participants.caller=true;},'phone-connected','Authenticated phone stream connected; checking caller media.');
+     transport.flush(this.state.controlEpoch,this.state.responseGeneration);this.publish();authenticated=true;
+    });
+    if(!authenticated)throw new Error('Invalid stream token');return;
+   }
+   if(!a.phone||input.streamSid!==a.phone.streamSid)throw new Error('Wrong phone stream');
+   const sequence=Number(input.sequenceNumber);if(!Number.isSafeInteger(sequence)||sequence<=a.phone.lastEventSequence)throw new Error('Replayed phone event');
+   a.phone.lastEventSequence=sequence;a.lastHeartbeat=Date.now();socket.serializeAttachment(a);
+   const transport=this.phoneTransports.get(socket);if(!transport)throw new Error('Phone transport lost');
+   if(input.event==='media'){
+    const timestamp=Number(input.media?.timestamp);
+    if(input.media?.track!=='inbound'||typeof input.media.payload!=='string'||!Number.isSafeInteger(timestamp)||timestamp<0||timestamp<=a.phone.lastTimestamp)throw new Error('Invalid phone audio');
+    a.phone.lastTimestamp=timestamp;const frames=transport.decode(input.media.payload);
+    if(frames.length)a.phone.captureReady=true;socket.serializeAttachment(a);await this.phoneMediaReady(socket,a);a=socket.deserializeAttachment() as Attachment;
+    for(const payload of frames){
+     if((this.state as CallState|undefined)?.queueState==='CLOSED'||this.state?.deleted)break;
+     const frame:AudioFrame={streamKind:AudioStreamKind.Patient,sequence:++a.phone!.nextAudioSequence,sampleRate:24000,controlEpoch:this.state!.controlEpoch,generation:this.state!.responseGeneration,responseId:0,payload};
+     await this.receiveAudio(socket,a,encodeAudioFrame(frame));
+    }
+    return;
+   }
+   if(input.event==='mark'){
+    if(typeof input.mark?.name!=='string'||input.mark.name.length>200)throw new Error('Invalid phone mark');
+    const receipt=transport.acknowledge(input.mark.name);
+    if(!receipt||receipt.epoch!==this.state.controlEpoch||receipt.generation!==this.state.responseGeneration)return;
+    if(receipt.type==='flush'){
+     a.phone.playbackReady=true;socket.serializeAttachment(a);await this.phoneMediaReady(socket,a);
+     this.playbackFlushed(a,{controlEpoch:receipt.epoch,generation:receipt.generation});
+    }else if(receipt.type==='audio')await this.audioAcknowledged(socket,a,{sequence:receipt.sequence,streamKind:receipt.streamKind,dropped:false});
+    return;
+   }
+   if(input.event==='dtmf'){
+    if(input.dtmf?.track!=='inbound_track'||typeof input.dtmf.digit!=='string'||!/^[0-9*#]$/.test(input.dtmf.digit))throw new Error('Invalid phone digit');
+    if(input.dtmf.digit==='0')await this.command({workspaceId:this.state.workspaceId,participantId:this.state.callerParticipantId,role:'caller',commandId:`phone-dtmf-${a.phone.streamSid}-${sequence}`,type:'request-human'});
+    return;
+   }
+   if(input.event==='stop'){
+    if(input.stop?.accountSid!==this.phone.accountSid||input.stop.callSid!==this.phone.providerCallSid)throw new Error('Invalid phone stop');
+    // This authenticated event confirms the carrier is already done. Never
+    // call its REST API merely to terminate an already ended stream.
+    await this.phoneStatus({workspaceId:this.phone.workspaceId,providerCallSid:this.phone.providerCallSid,status:'completed'});return;
+   }
+   throw new Error('Unsupported phone event');
+  }catch{
+   if(a.authenticated)this.phoneTransportFailure(socket);else try{socket.close(1008,'Invalid phone start');}catch{}
+  }
+ }
+ private async phoneMediaReady(socket:WebSocket,a:Attachment){
+  if(a.mediaReady||!a.phone?.captureReady||!a.phone.playbackReady||!this.state||this.state.deleted||this.state.queueState==='CLOSED')return;
+  a.mediaReady=true;socket.serializeAttachment(a);this.mutate(s=>{s.mediaReady.caller=true;},'media-ready','Phone input and carrier playback readiness confirmed.');
+  await this.beginHandoff();this.ctx.waitUntil(this.startIntake());this.publish();
+ }
  async webSocketMessage(socket:WebSocket,message:string|ArrayBuffer){
   let a=socket.deserializeAttachment() as Attachment|null;if(!a)return socket.close(1008,'Authentication required');
+  if(a.transport==='phone'){await this.receivePhoneMessage(socket,a,message);return;}
   if(a.expiresAt<Date.now())return socket.close(1008,'Session expired; obtain a new ticket');
   if(!a.authenticated){
    if(typeof message!=='string'||message.length>4096)return socket.close(1008,'Authentication required');
@@ -195,24 +386,36 @@ export class CallSession extends DurableObject<Env>{
     else if((a.role==='nurse'||a.role==='admin')&&this.state?.claim?.participantId===a.participantId)this.mutate(s=>{s.mediaReady.nurse=a!.mediaReady;s.participants.nurse=true;},'media-ready','Nurse microphone and playback readiness updated.');
     await this.beginHandoff();if(a.role==='caller')this.ctx.waitUntil(this.startIntake());this.publish();return;
    }
-   // The immediate AI-cancel flush can precede nurse readiness. Only the
-   // handoff's new-epoch flush proves that both sides entered human audio.
-   if(input.type==='playback-flushed'&&a.role==='caller'&&this.state?.handoff&&this.state.flushIssuedFor===this.state.handoff.id&&input.controlEpoch===this.state.controlEpoch&&input.generation===this.state.responseGeneration){this.mutate(s=>{s.handoff!.callerFlushed=true;},'handoff-flushed','Caller confirmed that queued agent audio was cleared.');this.publish();return;}
-   if(input.type==='audio-ack'){
-    const index=a.pending.findIndex(p=>p.sequence===input.sequence&&p.streamKind===input.streamKind);
-    if(index<0)return;
-    const frame=a.pending.splice(index,1)[0]!;socket.serializeAttachment(a);
-    const speech=this.currentSpeech;if(input.dropped!==true&&frame.streamKind===AudioStreamKind.Agent&&speech&&speech.responseId===frame.responseId&&!speech.playbackMeasured&&this.current(speech.epoch,speech.generation)){speech.playbackMeasured=true;const playbackMs=Date.now()-speech.startedAt;this.mutate(s=>{s.timings={...s.timings,firstAudioPlaybackMs:playbackMs};},'speech-playback','Caller worklet acknowledged first agent audio playback.');this.publish();}
-    if(input.dropped!==true&&this.state?.conversationOwner==='HANDOFF_PENDING'&&this.state.handoff?.callerFlushed){
-     if(a.role==='caller'&&frame.streamKind===AudioStreamKind.Nurse)this.mutate(s=>{s.handoff!.callerHeard=true;},'media-proof','Caller playback acknowledged nurse audio.');
-     else if(a.participantId===this.state.claim?.participantId&&frame.streamKind===AudioStreamKind.Patient)this.mutate(s=>{s.handoff!.nurseHeard=true;},'media-proof','Nurse playback acknowledged caller audio.');
-     await this.finishHandoff();
-    }return;
-   }
+   if(input.type==='playback-flushed'){this.playbackFlushed(a,input);return;}
+   if(input.type==='audio-ack'){await this.audioAcknowledged(socket,a,input);return;}
    if(input.type==='barge-in'&&a.role==='caller'&&this.state?.conversationOwner==='AI'){this.abortAi('barge-in');this.publish();return;}
    if(input.type==='audio-gap'){this.gap('Audio interrupted by bounded transport backpressure.');return;}
    if(input.type==='mock-turn'&&a.role==='caller'&&this.state?.mode==='mock'&&typeof input.text==='string'&&input.text.length<=6000){await this.acceptTurn({id:`fixture:${crypto.randomUUID()}`,sessionId:'fixture',order:this.state.turns.length,text:input.text,final:true,at:Date.now()});return;}
   }catch{this.send(socket,{type:'error',code:'invalid_message',message:'Invalid control message.',recoverable:true});}
+ }
+ private playbackFlushed(a:Attachment,input:{controlEpoch?:unknown;generation?:unknown}){
+  // Only the handoff's new epoch proves that prior caller output was cleared.
+  if(a.role==='caller'&&this.state?.handoff&&this.state.flushIssuedFor===this.state.handoff.id&&input.controlEpoch===this.state.controlEpoch&&input.generation===this.state.responseGeneration){this.mutate(s=>{s.handoff!.callerFlushed=true;},'handoff-flushed','Caller confirmed that queued agent audio was cleared.');this.publish();}
+ }
+ private async audioAcknowledged(socket:WebSocket,a:Attachment,input:{sequence?:unknown;streamKind?:unknown;dropped?:unknown}){
+  const index=a.pending.findIndex(p=>p.sequence===input.sequence&&p.streamKind===input.streamKind);if(index<0)return;
+  const frame=a.pending.splice(index,1)[0]!;socket.serializeAttachment(a);
+  const speech=this.currentSpeech;
+  if(input.dropped!==true&&frame.streamKind===AudioStreamKind.Agent&&speech&&speech.responseId===frame.responseId&&!speech.playbackMeasured&&this.current(speech.epoch,speech.generation)){
+   speech.playbackMeasured=true;const playbackMs=Date.now()-speech.startedAt;this.mutate(s=>{s.timings={...s.timings,firstAudioPlaybackMs:playbackMs};},'speech-playback',a.transport==='phone'?'Carrier playback mark acknowledged first agent audio.':'Caller worklet acknowledged first agent audio playback.');this.publish();
+  }
+  if(input.dropped!==true&&this.state?.conversationOwner==='HANDOFF_PENDING'&&this.state.handoff?.callerFlushed){
+   if(a.role==='caller'&&frame.streamKind===AudioStreamKind.Nurse)this.mutate(s=>{s.handoff!.callerHeard=true;},'media-proof',a.transport==='phone'?'Carrier playback mark acknowledged nurse audio.':'Caller playback acknowledged nurse audio.');
+   else if(a.participantId===this.state.claim?.participantId&&frame.streamKind===AudioStreamKind.Patient)this.mutate(s=>{s.handoff!.nurseHeard=true;},'media-proof','Nurse playback acknowledged caller audio.');
+   await this.finishHandoff();
+  }
+ }
+ private sendAudio(socket:WebSocket,a:Attachment,frame:AudioFrame){
+  if(a.transport==='phone'){
+   const transport=this.phoneTransports.get(socket);if(!transport){this.phoneTransportFailure(socket);return;}
+   try{transport.sendAudio(frame);}catch{this.phoneTransportFailure(socket);return;}
+  }else socket.send(encodeAudioFrame(frame));
+  a.pending.push({sequence:frame.sequence,streamKind:frame.streamKind,responseId:frame.responseId});socket.serializeAttachment(a);
  }
  private async receiveAudio(socket:WebSocket,a:Attachment,bytes:ArrayBuffer){
   const state=this.state;if(!state||state.deleted||state.queueState==='CLOSED'||Date.now()>=state.callDeadlineAt)return;
@@ -240,7 +443,7 @@ export class CallSession extends DurableObject<Env>{
    if(!a?.authenticated||!a.mediaReady||a.expiresAt<Date.now())continue;
    if(target==='caller'?a.role!=='caller':a.participantId!==this.state?.claim?.participantId||!(a.role==='nurse'||a.role==='admin'))continue;
    if(a.pending.length>=20){this.gap('Human audio interrupted by network congestion.');continue;}
-   try{socket.send(encodeAudioFrame({...frame,controlEpoch:this.state!.controlEpoch,generation:this.state!.responseGeneration}));a.pending.push({sequence:frame.sequence,streamKind:frame.streamKind});socket.serializeAttachment(a);}catch{/* close handler owns recovery */}
+   try{this.sendAudio(socket,a,{...frame,controlEpoch:this.state!.controlEpoch,generation:this.state!.responseGeneration});}catch{if(a.transport==='phone')this.phoneTransportFailure(socket);}
   }
  }
  private gap(message:string){if(!this.state||this.state.warnings.at(-1)===message)return;this.mutate(s=>{s.warnings.push(message);s.warnings=s.warnings.slice(-20);},'audio-gap',message);this.publish();}
@@ -262,7 +465,9 @@ export class CallSession extends DurableObject<Env>{
  }
  async webSocketError(socket:WebSocket){this.disconnected(socket);try{socket.close(1011,'Connection failed');}catch{}}
  private disconnected(socket:WebSocket){
-  const a=socket.deserializeAttachment() as Attachment|null;if(!a?.authenticated||!this.state||this.state.deleted)return;
+  const a=socket.deserializeAttachment() as Attachment|null;if(!a?.authenticated||!this.state)return;
+  if(a.transport==='phone'){this.phoneTransportFailure(socket);return;}
+  if(this.state.deleted)return;
   if(this.ctx.getWebSockets().some(other=>{if(other===socket)return false;const peer=other.deserializeAttachment() as Attachment|null;return peer?.authenticated&&peer.participantId===a.participantId&&peer.role===a.role&&other.readyState===WebSocket.OPEN;}))return;
   if(a.role==='caller'){this.mutate(s=>{s.participants.caller=false;s.mediaReady.caller=false;},'caller-disconnected','Caller disconnected; queue arrival time preserved.');if(this.state.conversationOwner==='AI')this.waitForNurse('technical_failure','Caller disconnected during intake. Reconnect for nurse help.');else{this.abortAi('caller-disconnected');this.stopProvider();}}
   else if(a.participantId===this.state.claim?.participantId){this.mutate(s=>{s.participants.nurse=false;s.mediaReady.nurse=false;s.conversationOwner='NONE';s.queueState=s.queueState==='CLOSED'?'CLOSED':'CLAIMED';s.humanRequested=true;s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;if(s.claim)s.claim.expiresAt=Date.now()+30000;delete s.handoff;},'nurse-disconnected','Nurse disconnected. Retry human access; AI will not restart automatically.');this.abortAi('nurse-disconnected',false);this.stopProvider();}
@@ -271,8 +476,9 @@ export class CallSession extends DurableObject<Env>{
  private async startIntake(){
   const state=this.state;if(!state||state.deleted||state.queueState==='CLOSED'||!state.consent||state.conversationOwner!=='AI'||!state.mediaReady.caller)return;
   if(Date.now()>=state.callDeadlineAt)return;
+  if(this.phone&&state.mode!=='live'){this.waitForNurse('technical_failure','Automated phone intake requires live speech. Waiting for a nurse.');return;}
   if(state.mode==='live'){
-   if(liveActivationIssues(this.env).length||!state.recordingConsent){this.providerFailure('live_activation_blocked');return;}
+   if(liveActivationIssues(this.phone?{...this.env,FICTIONAL_LIVE_TEST:undefined}:this.env).length||!state.recordingConsent){this.providerFailure('live_activation_blocked');return;}
    if(this.voice||this.connecting)return;
    this.connecting=true;const connectionId=++this.providerConnection;const attemptId=crypto.randomUUID();
    this.store.storage.sql.exec('INSERT INTO provider_connections(attempt_id,agent_id,started_at,status) VALUES(?,?,?,?)',attemptId,this.env.VOICE_AGENT_ID!,Date.now(),'connecting');
@@ -336,9 +542,11 @@ export class CallSession extends DurableObject<Env>{
   if(status==='interrupted'){
    this.abortAi('provider-interrupted');this.mutate(s=>{s.aiStatus='listening';},'reply-interrupted','Provider interrupted agent output; queued playback flushed.');this.publish();return;
   }
-  const started=Date.now();
+  const started=Date.now();let phoneDrained=false;
   while(this.current(reply.epoch,reply.generation)){
-   const pending=this.voiceDrain||this.voiceQueue.some(item=>item.replyId===replyId)||this.ctx.getWebSockets().some(socket=>{const a=socket.deserializeAttachment() as Attachment|null;return a?.authenticated&&a.role==='caller'&&a.pending.some(frame=>frame.streamKind===AudioStreamKind.Agent&&frame.responseId===reply.responseId);});
+   const generating=this.voiceDrain||this.voiceQueue.some(item=>item.replyId===replyId);
+   if(!generating&&!phoneDrained){for(const [socket,transport] of this.phoneTransports){try{transport.finishAudio(reply.responseId);}catch{this.phoneTransportFailure(socket);}}phoneDrained=true;}
+   const pending=generating||[...this.phoneTransports.values()].some(transport=>transport.hasPending(reply.responseId))||this.ctx.getWebSockets().some(socket=>{const a=socket.deserializeAttachment() as Attachment|null;return a?.authenticated&&a.role==='caller'&&a.pending.some(frame=>frame.streamKind===AudioStreamKind.Agent&&frame.responseId===reply.responseId);});
    if(!pending)break;
    if(Date.now()-started>5000){this.providerFailure('playback_ack_timeout');return;}await delay(10);
   }
@@ -358,7 +566,7 @@ export class CallSession extends DurableObject<Env>{
     }
     if(!this.current(reply.epoch,reply.generation))break;
     const sequence=++this.speechSequence;const payload=entry.pcm.slice(offset,offset+2400);
-    for(const socket of recipients){const a=socket.deserializeAttachment() as Attachment;socket.send(encodeAudioFrame({streamKind:AudioStreamKind.Agent,sequence,sampleRate:24000,controlEpoch:reply.epoch,generation:reply.generation,responseId:reply.responseId,payload}));a.pending.push({sequence,streamKind:AudioStreamKind.Agent,responseId:reply.responseId});socket.serializeAttachment(a);}
+    for(const socket of recipients){const a=socket.deserializeAttachment() as Attachment;this.sendAudio(socket,a,{streamKind:AudioStreamKind.Agent,sequence,sampleRate:24000,controlEpoch:reply.epoch,generation:reply.generation,responseId:reply.responseId,payload});}
     if(!reply.audioReadyMeasured){reply.audioReadyMeasured=true;this.mutate(s=>{s.aiStatus='speaking';s.timings={...s.timings,firstAudioReadyMs:Date.now()-reply.startedAt};},'voice-audio','Voice Agent audio ready.');this.publish();}
    }
   }}finally{this.voiceDrain=false;}
@@ -457,7 +665,7 @@ export class CallSession extends DurableObject<Env>{
      }
      if(!this.current(epoch,generation)||responseId!==this.generationJob)return;
      const sequence=++this.speechSequence;const payload=speech.bytes.slice(offset,Math.min(speech.bytes.length,offset+length));
-     for(const socket of recipients){const a=socket.deserializeAttachment() as Attachment;socket.send(encodeAudioFrame({streamKind:AudioStreamKind.Agent,sequence,sampleRate:speech.sampleRate,controlEpoch:epoch,generation,responseId,payload}));a.pending.push({sequence,streamKind:AudioStreamKind.Agent,responseId});socket.serializeAttachment(a);}
+     for(const socket of recipients){const a=socket.deserializeAttachment() as Attachment;this.sendAudio(socket,a,{streamKind:AudioStreamKind.Agent,sequence,sampleRate:speech.sampleRate,controlEpoch:epoch,generation,responseId,payload});}
     }
    }
    const drainStarted=Date.now();
@@ -467,8 +675,15 @@ export class CallSession extends DurableObject<Env>{
    if(this.current(epoch,generation)){this.providerFailure('fixture_playback_failed');this.abortAi('tts-failure');this.mutate(s=>{s.aiStatus='unavailable';s.warnings.push('Speech output unavailable. Read the approved text or request a person.');s.escalations.push({id:crypto.randomUUID(),reason:'technical_failure',message:'Speech output unavailable; staff review required. Approved text remains available.',at:Date.now()});},'tts-failure','Speech output failed; approved text and human access remain available.');this.broadcast({type:'agent-status',status:'unavailable'});this.publish();}
   }
  }
- private async flushProjection(){
-  if(this.projectionBusy||!this.state)return;this.projectionBusy=true;
+ private flushProjection():Promise<void>{
+  // Concurrent admission retries need the same durable queue result. A busy
+  // boolean made later callers return before the first projection committed.
+  if(this.projectionTask)return this.projectionTask;
+  this.projectionTask=this.flushProjectionBatch().finally(()=>{this.projectionTask=undefined;});
+  return this.projectionTask;
+ }
+ private async flushProjectionBatch(){
+  if(!this.state)return;
   try{
    for(const row of this.store.pending()){
     const projected=JSON.parse(row.body) as CallState;
@@ -484,7 +699,7 @@ export class CallSession extends DurableObject<Env>{
      this.projectionRetryAt=Date.now()+Math.min(60000,1000*2**Math.min(row.attempts,6));break;
     }
    }
-  }finally{this.projectionBusy=false;await this.scheduleAlarm();}
+  }finally{await this.scheduleAlarm();}
  }
  private async cleanupProviderSessions(){
   if(!this.state)return;
@@ -498,7 +713,7 @@ export class CallSession extends DurableObject<Env>{
   }
  }
  private async eraseContent(){
-  if(!this.state)return;this.stopProvider();
+  if(!this.state)return;this.stopProvider();this.requestPhoneTermination();
   const keys=this.store.storage.sql.exec<{object_key:string}>('SELECT object_key FROM export_reservations').toArray();
   // Tombstone survives content deletion and fences every delayed D1 write.
   this.ctx.storage.transactionSync(()=>{
@@ -506,6 +721,7 @@ export class CallSession extends DurableObject<Env>{
    this.state!.turns=[];this.state!.assistantTurns=[];this.state!.facts=[];this.state!.factRevisions=[];this.state!.timeline=[];this.state!.escalations=[];this.state!.warnings=[];this.state!.deleted=true;this.state!.providerSession={status:'ended'};this.state!.provider.sessionId=null;
    this.store.commit(this.state!,'deleted','Synthetic case deleted.');
   });
+  this.scrubDeletedPhone();
   for(const row of keys){try{await this.env.EXPORTS?.delete(row.object_key);this.store.storage.sql.exec('DELETE FROM export_reservations WHERE object_key=?',row.object_key);}catch{/* Alarm retries object deletion. */}}
   await this.cleanupProviderSessions();this.broadcast({type:'deleted'});for(const socket of this.ctx.getWebSockets())socket.close(1000,'Case deleted');await this.flushProjection();
  }
@@ -515,14 +731,16 @@ export class CallSession extends DurableObject<Env>{
   if(this.state.queueState!=='CLOSED')at=Math.min(at,this.state.callDeadlineAt);
   if(this.reconnectAt)at=Math.min(at,this.reconnectAt);
   if(this.projectionRetryAt)at=Math.min(at,this.projectionRetryAt);
-  if(this.state.deleted&&!this.store.pending().length&&!this.store.storage.sql.exec('SELECT id FROM export_reservations LIMIT 1').toArray().length&&!this.store.storage.sql.exec('SELECT session_id FROM provider_cleanup LIMIT 1').toArray().length){await this.ctx.storage.deleteAlarm();return;}
+  if(this.phone?.terminationPending||this.phone?.reservationReleasePending)at=Math.min(at,this.phone.terminationRetryAt??now+10000);
+  if(this.state.deleted&&!this.phone?.terminationPending&&!this.phone?.reservationReleasePending&&!this.store.pending().length&&!this.store.storage.sql.exec('SELECT id FROM export_reservations LIMIT 1').toArray().length&&!this.store.storage.sql.exec('SELECT session_id FROM provider_cleanup LIMIT 1').toArray().length){await this.ctx.storage.deleteAlarm();return;}
   await this.ctx.storage.setAlarm(Math.max(now+1000,at));
  }
  async alarm(){
   const state=this.state;if(!state)return;const now=Date.now();
+  await this.retryPhoneTermination();
   if(!state.deleted&&now>=state.expiresAt){this.mutate(s=>{s.deleted=true;s.queueState='CLOSED';s.conversationOwner='NONE';s.controlEpoch++;s.responseGeneration++;},'retention-expired','Synthetic case retention expired.');await this.eraseContent();return;}
   if(state.deleted){await this.cleanupProviderSessions();for(const row of this.store.storage.sql.exec<{object_key:string}>('SELECT object_key FROM export_reservations').toArray()){try{await this.env.EXPORTS?.delete(row.object_key);this.store.storage.sql.exec('DELETE FROM export_reservations WHERE object_key=?',row.object_key);}catch{}}await this.flushProjection();await this.scheduleAlarm();return;}
-  if(this.state&&this.state.queueState!=='CLOSED'&&now>=this.state.callDeadlineAt){this.mutate(s=>{s.queueState='CLOSED';s.conversationOwner='NONE';s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;delete s.handoff;s.warnings.push('Ten-minute synthetic call limit reached. The call is closed operationally; this is not a clinical disposition.');},'duration-limit','Bounded synthetic call duration reached.');this.abortAi('duration-limit',false);this.stopProvider();this.publish();for(const socket of this.ctx.getWebSockets())socket.close(1000,'Simulation duration limit reached');}
+  if(this.state&&this.state.queueState!=='CLOSED'&&now>=this.state.callDeadlineAt){this.mutate(s=>{s.queueState='CLOSED';s.conversationOwner='NONE';s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;delete s.handoff;s.warnings.push('Ten-minute synthetic call limit reached. The call is closed operationally; this is not a clinical disposition.');},'duration-limit','Bounded synthetic call duration reached.');this.abortAi('duration-limit',false);this.stopProvider();this.requestPhoneTermination();this.publish();for(const socket of this.ctx.getWebSockets())socket.close(1000,'Simulation duration limit reached');}
   for(const socket of this.ctx.getWebSockets()){const a=socket.deserializeAttachment() as Attachment|null;if(a&&(a.expiresAt<now||a.authenticated&&now-a.lastHeartbeat>30000)){this.disconnected(socket);socket.close(1008,'Heartbeat or session expired');}}
   if(this.state?.handoff&&this.state.handoff.deadline<now){this.mutate(s=>{delete s.handoff;s.conversationOwner='NONE';s.aiStatus='stopped';s.humanRequested=true;s.controlEpoch++;s.responseGeneration++;},'handoff-timeout','Human audio checks timed out. Caller session preserved; retry available.');this.abortAi('handoff-timeout',false);this.stopProvider();this.publish();}
   if(this.state?.claim&&this.state.claim.expiresAt<now&&this.state.queueState==='CLAIMED'){this.mutate(s=>{delete s.claim;s.queueState='WAITING';s.participants.nurse=false;s.mediaReady.nurse=false;},'claim-expired','Nurse claim expired; queue arrival time preserved.');this.publish();}

@@ -5,6 +5,7 @@ Two independently deployed Workers retain actual Next.js Route Handlers and a Wo
 ```mermaid
 flowchart LR
   Caller[Caller browser] <-->|Authenticated PCM24k| Session[CallSession Durable Object]
+  Phone[Telephone via Twilio] <-->|Signed stream, mu-law conversion| Session
   Nurse[Nurse browser] <-->|Direct human relay| Session
   Session <-->|Automated intake only| Voice[AssemblyAI Voice Agent]
   Voice -->|Streaming conversation| Nemotron[Nebius Nemotron]
@@ -26,7 +27,9 @@ CallSession SQLite owns state, finalized transcripts, fact revisions, command re
 
 Event revision orders recoverable changes. Control revision protects claims independently of transcript arrivals. Control epoch and response generation invalidate obsolete audio and inference. Every application mutation uses an idempotency command ID; changed-payload reuse is rejected.
 
-HTTP commands stay in Next.js. Realtime's public entry only accepts authenticated media sockets and a content-free health check. Connection tickets are opaque random capabilities backed by server-side call/workspace/participant/role/audience/expiry/nonce records; clients cannot modify claims. The ticket is transmitted in the first socket message, never its URL.
+Browser HTTP commands stay in Next.js. Realtime accepts authenticated media sockets, signed Twilio webhooks and a content-free health check. Browser connection tickets are opaque random capabilities backed by server-side call/workspace/participant/role/audience/expiry/nonce records; clients cannot modify claims. The ticket is transmitted in the first socket message, never its URL.
+
+Optional phone ingress maps operator-owned numbers to an existing workspace. A transactional D1 receipt reserves a stable case and quotas before its Durable Object initialization; retries preserve identity and arrival. The official SDK validates Twilio signatures against the configured public origin. The signed socket then consumes a short-lived token bound to the provider call, checks its media format and joins as the case's caller. Provider identifiers and token hashes stay in private storage outside snapshots. Signed terminal events install a fence even if they arrive before the voice webhook.
 
 Queue state, intake state, ownership, AI failure, review, escalation, connectivity and deletion remain separate. CLOSED means operationally ended, not a clinical disposition.
 
@@ -36,13 +39,17 @@ Capture and playback use AudioWorklet. Stateful filtering/resampling converts th
 
 Takeover requires an exclusive claim, enabled microphones/playback, fresh readiness, epoch advancement, caller playback-worklet flush acknowledgment, and peer-frame playback acknowledgments in both directions. An open socket alone does not establish connection. Human audio bypasses providers. Missing heartbeat or failed handoff leaves a retryable human request and never silently restarts AI.
 
-WebSocket audio is a bounded MVP transport. TCP head-of-line blocking makes packet loss stall newer audio; limited networks can cause underruns and visible gaps. This is neither WebRTC nor carrier-grade telephony. The audio transport interface can later be replaced with Cloudflare Realtime/WebRTC. A future telephony adapter must authenticate its participants, translate media, preserve epochs and consent, and satisfy separate carrier/privacy requirements; this demo answers no telephone numbers.
+Phone transport converts Twilio's 8 kHz mono G.711 mu-law to/from the shared PCM format. A clear retires old playback marks; a fresh silence/mark boundary proves the new epoch was reached. Nurse takeover additionally requires actual caller and nurse playback acknowledgments. DTMF 0 requests human access. If AI readiness or consent is absent, the phone joins the human queue without synthetic agent output. See [inbound phone setup](phone-inbound.md).
+
+WebSocket audio remains a bounded MVP transport. TCP head-of-line blocking makes packet loss stall newer audio; limited networks can cause underruns and visible gaps. Real carrier and physical-device acceptance is separate from the local protocol tests.
 
 ## Durability
 
 State and outbox insertion use synchronous SQLite transactions without network I/O. Ordered D1 writes require the previous projection checkpoint and no deletion tombstone. Retries cannot duplicate facts or resurrect deleted cases. Alarms handle retry, claim/handoff timeout, session bounds, and retention.
 
 Outbound Voice Agent connections are active paid work and prevent normal hibernation. Calls are bounded to ten minutes. Restart reloads durable control, invalidates output, and exposes a gap; a new authenticated connection is required. Providers do not restart automatically after a failure, reconnect, waiting transition or takeover.
+
+Phone reservations cover the entire telephone call, including waiting and human conversation. Hangup, deletion, deadline and media loss persist carrier completion work with alarm retries. Reservations release only on confirmed carrier termination. A phone stream cannot reuse its consumed token after a restart; recovery closes that carrier leg. Case deletion scrubs content while minimal provider receipts remain for replay fencing and outstanding cleanup.
 
 Private R2 export keys are reserved before upload and checked again afterward. Deletion installs permanent content-free fences, closes providers, removes primary content and schedules cross-store cleanup. Backup retention and provider retention remain separate limitations.
 

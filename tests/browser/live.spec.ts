@@ -13,6 +13,7 @@ async function participant(fixture: string): Promise<{ server: BrowserServer; br
     headless: true,
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
     args: [
+      '--disable-crashpad-for-testing',
       '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
       `--use-file-for-fake-audio-capture=${resolve(`tests/fixtures/${fixture}`)}`,
       '--autoplay-policy=no-user-gesture-required',

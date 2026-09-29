@@ -105,15 +105,17 @@ export async function command(request: Request, id: string, type: string) { cons
     throw new HttpError(403, 'Replay is unavailable in live mode'); const { commandId, expectedRevision, ...payload } = parsed; return json(unwrap(await callObject(bindings, id).command({ workspaceId: user.workspaceId, participantId: user.participantId, role: user.role, commandId, expectedRevision, type, payload }))); }
 export async function settings(request: Request) { const bindings = env(), user = await session(request, bindings, ['admin', 'nurse']); const row = await bindings.DB.prepare('SELECT settings_json FROM workspaces WHERE id=?').bind(user.workspaceId).first<{
     settings_json: string;
-}>(); let providers = { voiceAgent: { configured: false, verified: false }, extraction: { configured: false, verified: false } }; const recording = {provider: 'assemblyai', enabled: bindings.PROVIDER_MODE === 'live', disclosureVersion: RECORDING_DISCLOSURE_VERSION, retentionVerified: false, deletionVerified: false}; try {
+}>(); let phoneInbound = { provider: 'twilio' as const, enabled: false, configured: false }; let providers = { voiceAgent: { configured: false, verified: false }, extraction: { configured: false, verified: false } }; const recording = {provider: 'assemblyai', enabled: bindings.PROVIDER_MODE === 'live', disclosureVersion: RECORDING_DISCLOSURE_VERSION, retentionVerified: false, deletionVerified: false}; try {
     const health = await bindings.REALTIME.fetch('https://internal/health');
     const value = await health.json() as {
         providers?: typeof providers;
+        phoneInbound?: typeof phoneInbound;
     };
     if (value.providers)
         providers = value.providers;
+    if (value.phoneInbound) phoneInbound = value.phoneInbound;
 }
-catch { /* Unavailable remains explicitly unverified. */ } return json({ escalationDestination: 'Demo nurse queue', ...JSON.parse(row?.settings_json ?? '{}'), retentionDays: 7, recording, template: await template(bindings, user.workspaceId), mode: bindings.PROVIDER_MODE, providers }); }
+catch { /* Unavailable remains explicitly unverified. */ } return json({ escalationDestination: 'Demo nurse queue', ...JSON.parse(row?.settings_json ?? '{}'), retentionDays: 7, recording, phoneInbound, template: await template(bindings, user.workspaceId), mode: bindings.PROVIDER_MODE, providers }); }
 const TemplateSchema = z.object({ id: z.string().min(1).max(64), name: z.string().min(1).max(120), opening: z.string().min(1).max(1000), acknowledgments: z.array(z.string().min(1).max(500)).min(1).max(8), questions: z.array(z.object({ id: FieldSchema, field: FieldSchema, text: z.string().min(1).max(500) })).min(1).max(8) });
 export async function updateSettings(request: Request) { const { bindings, user, data } = await mutation(request, ['admin']); const destination = data.escalationDestination === undefined ? undefined : z.string().min(1).max(120).parse(data.escalationDestination); if (data.recording !== undefined || data.retentionDays !== undefined && data.retentionDays !== 7)
     throw new HttpError(400, 'Provider recording is controlled by deployment configuration; application retention stays at seven days'); const statements = destination === undefined ? [] : [bindings.DB.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').bind(JSON.stringify({ escalationDestination: destination }), user.workspaceId)]; if (data.template) {

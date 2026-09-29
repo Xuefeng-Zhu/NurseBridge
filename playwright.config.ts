@@ -10,6 +10,8 @@ export default defineConfig({
   outputDir: './output/playwright/results',
   reporter: [['list'], ['html', { outputFolder: './output/playwright/report', open: 'never' }]],
   use: {
+    // Keep macOS crash helpers from retaining the runner's stderr pipe after Chrome exits.
+    launchOptions: { args: ['--disable-crashpad-for-testing'] },
     baseURL: process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',

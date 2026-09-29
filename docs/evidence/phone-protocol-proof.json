@@ -1,0 +1,37 @@
+{
+  "verification": "Signed loopback Twilio protocol emulator, not real PSTN delivery.",
+  "codec": "audio/x-mulaw; rate=8000; channels=1",
+  "nurseBrowser": {
+    "receivedFrames": 17,
+    "playedSamples": 39680,
+    "rms": 0.2821341363252243,
+    "underruns": 0,
+    "droppedFrames": 0,
+    "queuedSamples": 1056,
+    "dominantFrequency": 438.82978723404256,
+    "zeroCrossings": 110,
+    "controlEpoch": 3,
+    "agentSamplesInEpoch": 0,
+    "humanSamplesInEpoch": 39680
+  },
+  "simulatedPhonePlayback": {
+    "samples": 10550,
+    "frequency": 660.0011693637308,
+    "rms": 0.01810177902269993,
+    "mediaPackets": 30,
+    "playedSamples": 10870,
+    "acknowledgedMarks": 29,
+    "clearCount": 3
+  },
+  "barrierGate": {
+    "callerFlushed": false,
+    "callerHeard": false,
+    "nurseHeard": false
+  },
+  "twoWayPlaybackGate": {
+    "callerFlushed": true,
+    "callerHeard": false,
+    "nurseHeard": true
+  },
+  "controlEpoch": 3
+}

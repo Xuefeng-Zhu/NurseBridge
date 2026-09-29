@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./protocol": "./src/protocol.ts"
+    "./protocol": "./src/protocol.ts",
+    "./resampler": "./src/resampler.ts"
   },
   "scripts": {
     "build": "node scripts/build-worklets.mjs",

@@ -28,6 +28,8 @@ Web quota variables are `MAX_ACTIVE_CALLS_PER_WORKSPACE=2`, `MAX_LIVE_CONCURRENC
 
 ## Staff Access option
 
+Optional Twilio inbound calls require migration `0002_phone_inbound.sql`, realtime account credentials, an exact public origin, and an operator-owned number-to-workspace map. Follow [inbound phone setup](phone-inbound.md) for Voice and status callback URLs, limits and acceptance. Phone-to-nurse service can run while AI is gated. Keep webhook and media endpoints reachable by Twilio; they verify provider signatures and one-use media tokens independently of browser staff authentication. No number is provisioned or configured by deployment alone.
+
 Use a hostname-based Cloudflare Access application for staff/admin traffic, with a restrictive identity policy. Configure an HTTPS `ACCESS_ISSUER` and exact `ACCESS_AUDIENCE`. Validate JWT signature against issuer JWKS, issuer, audience and expiry, then require workspace membership. A header's presence alone grants nothing. Do not put worker-level Access policies on the realtime upgrade endpoint; current Cloudflare documentation notes incompatibility with WebSocket upgrades. Caller access still uses scoped invitations and tickets.
 
 ## Rollback and operational limits

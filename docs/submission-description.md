@@ -8,7 +8,7 @@ Next.js App Router runs on Cloudflare Workers through OpenNext. A SQLite-backed 
 
 Demonstration story: busy nurse → caller's story → evidence-linked draft → corrected detail → preserved uncertainty → nurse takeover during agent speech → direct human conversation.
 
-This is a synthetic-data browser simulation. It answers no telephone numbers and makes no clinical-safety, compliance, accuracy or time-savings claims.
+This is a synthetic-data demonstration. Optional Twilio inbound support connects a configured telephone number to the nurse browser; real-number deployment and acceptance remain pending. It makes no clinical-safety, compliance, accuracy or time-savings claims.
 
 ## Submission checklist
 

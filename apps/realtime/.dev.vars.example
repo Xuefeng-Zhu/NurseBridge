@@ -8,3 +8,13 @@ VOICE_AGENT_VERSION=
 VOICE_AGENT_COMPATIBILITY_VERIFIED=false
 FICTIONAL_LIVE_TEST=false
 ALLOWED_ORIGINS=http://localhost:8787,http://127.0.0.1:8787,http://localhost:3000,http://127.0.0.1:3000
+
+# Optional real inbound phone transport. Set secrets through Wrangler in staging.
+# Route only to an intentionally selected active workspace; never use real patient data.
+PHONE_INBOUND_ENABLED=false
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_PUBLIC_ORIGIN=
+TWILIO_INBOUND_ROUTES={}
+PHONE_MAX_CONCURRENT=2
+PHONE_DAILY_MINUTES=60
