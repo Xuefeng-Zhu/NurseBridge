@@ -1,6 +1,8 @@
-# Two-browser walkthrough
+# Local two-browser acceptance walkthrough
 
-1. Open `/demo` in the nurse browser. Read the simulation disclosure, create a workspace, and copy a caller invitation. Use a separate browser/profile or device to redeem it; do not replace the nurse session cookie.
+Use the local Workers runtime with sandbox enrollment enabled and fictional information only. Hosted environments require a completed staff provisioning workflow; this walkthrough does not provision production identities.
+
+1. Open `http://localhost:8787/workspace` in the nurse browser. Read the simulation disclosure, create a sandbox workspace, and copy a caller invitation. Use a separate browser/profile or device to redeem it; do not replace the nurse session cookie.
 2. Use headphones. In live mode, review and accept the separate provider-recording disclosure. Explicitly enable audio in both browsers when their controls request it. Confirm microphone permission and output readiness.
 3. In the caller browser, join the queue first. Accept the fictional-intake disclosure (including provider recording in live mode) to start automated intake, or decline and demonstrate that the queue position and human request remain available.
 4. In **live mode**, speak fictional details into the microphone. In **mock mode**, use explicitly labeled scenario controls; these replay transcript fixtures and do not recognize your voice.

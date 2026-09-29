@@ -1,5 +1,5 @@
 import { ExtractionSchema, FieldSchema, type CallSnapshot, type CollectionProgress, type Extraction, type FieldId, type IntakeFact, type IntakeTemplate, type TranscriptTurn } from '@nursebridge/contracts';
-export const DEFAULT_TEMPLATE: IntakeTemplate = { id: 'general-intake', version: 1, name: 'Fictional nurse-line intake', opening: 'I am an automated intake assistant, not a nurse. Please tell me what you are calling about.', acknowledgments: ['Thank you. I have captured what you reported.', 'You can ask for a person at any time.', 'Intake captured — awaiting nurse assessment.'], questions: [
+export const DEFAULT_TEMPLATE: IntakeTemplate = { id: 'general-intake', version: 1, name: 'General nurse-line intake', opening: 'I am an automated intake assistant, not a nurse. Please tell me what you are calling about.', acknowledgments: ['Thank you. I have captured what you reported.', 'You can ask for a person at any time.', 'Intake captured — awaiting nurse assessment.'], questions: [
         { id: 'reason', field: 'reason', text: 'Please tell me what you are calling about.' },
         { id: 'onset', field: 'onset', text: 'When did this start?' },
         { id: 'location', field: 'location', text: 'Where do you notice it, in your own words?' },
@@ -7,7 +7,7 @@ export const DEFAULT_TEMPLATE: IntakeTemplate = { id: 'general-intake', version:
         { id: 'symptoms', field: 'symptoms', text: 'What else have you noticed?' },
         { id: 'medications', field: 'medications', text: 'Are there any medication details you would like the nurse to know? It is okay if you are unsure.' },
         { id: 'uncertainties', field: 'uncertainties', text: 'Is there anything you are uncertain about or have not measured?' },
-        { id: 'callback', field: 'callback', text: 'For this fictional demonstration, what fictional callback number should we note?' }
+        { id: 'callback', field: 'callback', text: 'What sample callback number should we note?' }
     ] };
 export function validateExtraction(value: unknown, turns: TranscriptTurn[], template: IntakeTemplate): Extraction {
     const result = ExtractionSchema.parse(value);

@@ -1,4 +1,4 @@
-import { RECORDING_DISCLOSURE, RECORDING_DISCLOSURE_VERSION, type IntakeTemplate, type RpcResult } from '@nursebridge/contracts';
+import { DISCLOSURE, RECORDING_DISCLOSURE, RECORDING_DISCLOSURE_VERSION, type IntakeTemplate, type RpcResult } from '@nursebridge/contracts';
 import { DEFAULT_TEMPLATE } from '@nursebridge/intake-policy';
 import { CALL_DURATION_MS, RETENTION_MS } from '@nursebridge/database';
 import type { Env } from '../env';
@@ -28,7 +28,7 @@ function checked(result: RpcResult) { if (!result.ok) throw new PhoneRequestErro
 function integer(value: string | undefined, fallback: number, maximum = 10_000): number { const number = Number(value ?? fallback); if (!Number.isInteger(number) || number < 1 || number > maximum) throw new PhoneRequestError(503, 'Phone quota configuration is unavailable.'); return number; }
 function xml(value: string) { return value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[character]!); }
 function twiml(content: string) { return new Response(`<?xml version="1.0" encoding="UTF-8"?><Response>${content}</Response>`, { headers: { 'Content-Type': 'text/xml; charset=utf-8', 'Cache-Control': 'no-store' } }); }
-function hangup(message = 'This demonstration call is no longer available.') { return twiml(`<Say>${xml(message)}</Say><Hangup/>`); }
+function hangup(message = 'This call is no longer available.') { return twiml(`<Say>${xml(message)}</Say><Hangup/>`); }
 function admitted(row: Receipt | null): row is Admitted { return Boolean(row?.call_id && row.workspace_id && row.caller_participant_id && row.template_json && row.expires_at && row.deadline_at && row.stream_token_expires_at); }
 function aiReady(env: Env) { return env.PROVIDER_MODE === 'live' && liveActivationIssues({ ...env, FICTIONAL_LIVE_TEST: undefined }).length === 0; }
 async function receipt(env: Env, callSid: string): Promise<Receipt | null> { return env.DB.prepare("SELECT * FROM inbound_calls WHERE provider='twilio' AND account_sid=? AND provider_call_sid=?").bind(env.TWILIO_ACCOUNT_SID, callSid).first<Receipt>(); }
@@ -58,10 +58,10 @@ async function admit(env: Env, form: URLSearchParams): Promise<Receipt> {
     return existing;
   }
   const workspaceId = routes(env)[destination];
-  if (!workspaceId) throw new PhoneRequestError(404, 'No inbound demonstration route is available.');
+  if (!workspaceId) throw new PhoneRequestError(404, 'No inbound call route is available.');
   const now = Date.now();
   const workspace = await env.DB.prepare('SELECT expires_at FROM workspaces WHERE id=? AND expires_at>?').bind(workspaceId, now).first<{ expires_at: number }>();
-  if (!workspace) throw new PhoneRequestError(410, 'The routed demonstration workspace has expired.');
+  if (!workspace) throw new PhoneRequestError(410, 'The routed workspace has expired.');
   const current = await env.DB.prepare('SELECT body_json FROM template_versions WHERE workspace_id=? ORDER BY version DESC LIMIT 1').bind(workspaceId).first<{ body_json: string }>();
   const templateJson = current?.body_json ?? JSON.stringify(DEFAULT_TEMPLATE);
   const callId = crypto.randomUUID(), participantId = crypto.randomUUID();
@@ -126,8 +126,8 @@ async function decide(env: Env, row: Admitted, wanted: Decision): Promise<Admitt
 function stream(env: Env, row: Admitted, token: string, decision: Decision): Response {
   const origin = publicPhoneOrigin(env);
   const socketOrigin = origin.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
-  const words = decision === 'accepted' ? 'Automated intake will begin. Press zero at any time to request a person.' : decision === 'declined' ? 'Automated intake is off. Your request is in the nurse queue. Press zero to request a person. This demonstration does not assess whether waiting is safe.' : 'Automated intake is unavailable. You are in the nurse queue for a human conversation. Press zero to request a person. This demonstration does not assess whether waiting is safe.';
-  return twiml(`<Say>${xml("This is a fictional demonstration, not medical care. " + words)}</Say><Connect><Stream url="${xml(`${socketOrigin}/phone/connect/${row.call_id}`)}"><Parameter name="token" value="${xml(token)}"/></Stream></Connect><Hangup/>`);
+  const words = decision === 'accepted' ? 'Automated intake will begin. Press zero at any time to request a person.' : decision === 'declined' ? 'Automated intake is off. Your request is in the nurse queue. Press zero to request a person. This service does not assess whether waiting is safe.' : 'Automated intake is unavailable. You are in the nurse queue for a human conversation. Press zero to request a person. This service does not assess whether waiting is safe.';
+  return twiml(`<Say>${xml(`${DISCLOSURE} ${words}`)}</Say><Connect><Stream url="${xml(`${socketOrigin}/phone/connect/${row.call_id}`)}"><Parameter name="token" value="${xml(token)}"/></Stream></Connect><Hangup/>`);
 }
 
 async function terminalStatus(env: Env, form: URLSearchParams): Promise<Response> {
@@ -155,11 +155,11 @@ async function terminalStatus(env: Env, form: URLSearchParams): Promise<Response
 async function voice(env: Env, form: URLSearchParams, consent: boolean): Promise<Response> {
   if (TERMINAL.has(form.get('CallStatus') ?? '')) { await terminalStatus(env, form); return hangup(); }
   const row = consent ? await receipt(env, form.get('CallSid')!) : await admit(env, form);
-  if (!admitted(row) || row.terminal_at !== null) return hangup(row?.status === 'rejected' ? 'This demonstration has reached its call limit. Please try again later.' : undefined);
+  if (!admitted(row) || row.terminal_at !== null) return hangup(row?.status === 'rejected' ? 'The service has reached its call limit. Please try again later.' : undefined);
   if (form.has('To') && row.destination_hash !== await phoneHash(form.get('To')!)) throw new PhoneRequestError(409, 'Provider call routing changed.');
   if (row.deadline_at <= Date.now()) { await fence(env, row.provider_call_sid, 'completed'); return hangup(); }
   const workspace = await env.DB.prepare('SELECT id FROM workspaces WHERE id=? AND expires_at>?').bind(row.workspace_id, Date.now()).first();
-  if (!workspace) return hangup('The demonstration workspace has expired.');
+  if (!workspace) return hangup('The workspace has expired.');
   const token = await initialize(env, row);
   // Recheck the terminal fence after the cross-system initialization await.
   const latest = await receipt(env, row.provider_call_sid);
@@ -170,7 +170,7 @@ async function voice(env: Env, form: URLSearchParams, consent: boolean): Promise
     const decided = await decide(env, latest, wanted);
     return stream(env, decided, token, decided.consent_decision!);
   }
-  return twiml(`<Gather input="dtmf" numDigits="1" timeout="7" actionOnEmptyResult="true" method="POST" action="${xml(publicPhoneOrigin(env) + '/phone/twilio/consent')}"><Say>${xml(`This is a fictional demonstration, not medical care. ${RECORDING_DISCLOSURE} Press 1 to accept automated intake and possible recording. Press 0 to decline and request a person.`)}</Say></Gather><Hangup/>`);
+  return twiml(`<Gather input="dtmf" numDigits="1" timeout="7" actionOnEmptyResult="true" method="POST" action="${xml(publicPhoneOrigin(env) + '/phone/twilio/consent')}"><Say>${xml(`${DISCLOSURE} ${RECORDING_DISCLOSURE} Press 1 to accept automated intake and possible recording. Press 0 to decline and request a person.`)}</Say></Gather><Hangup/>`);
 }
 
 /** Dedicated signed provider ingress; browser cookie and Origin routes remain unchanged. */

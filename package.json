@@ -23,7 +23,12 @@
     "deploy": "node scripts/deploy.mjs",
     "test:workers": "vitest run --config apps/realtime/vitest.config.ts",
     "setup:voice-agent": "node scripts/setup-voice-agent.mjs",
-    "test:voice-agent-setup": "node --test scripts/setup-voice-agent.test.mjs"
+    "test:voice-agent-setup": "node --test scripts/setup-voice-agent.test.mjs",
+    "deploy:check": "node scripts/deploy-preflight.mjs",
+    "test:deploy": "node --test scripts/deploy.test.mjs",
+    "test:tooling": "node --test scripts/*.test.mjs",
+    "test:e2e": "node scripts/test-phone.mjs --all",
+    "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:workers && pnpm test:tooling && pnpm build"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.1.13",
@@ -37,5 +42,6 @@
     "vitest": "4.1.4",
     "ws": "8.21.3"
   },
-  "type": "module"
+  "type": "module",
+  "description": "Voice intake, evidence-linked drafts, and human handoff for nursing teams."
 }

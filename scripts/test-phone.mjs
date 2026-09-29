@@ -14,8 +14,18 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const flags = new Set(process.argv.slice(2).filter(argument => argument !== '--'));
 const allowedFlags = new Set(['--skip-build', '--all', '--help']);
-const baseURL = 'http://localhost:8787';
-const phoneOrigin = 'http://localhost:8788';
+function localPort(name, fallback) {
+  const value = process.env[name] ?? String(fallback);
+  if (!/^[0-9]+$/.test(value) || Number(value) < 1024 || Number(value) > 65535) {
+    throw new Error(`${name} must be a local port between 1024 and 65535.`);
+  }
+  return Number(value);
+}
+const webPort = localPort('NURSEBRIDGE_QA_WEB_PORT', 8787);
+const realtimePort = localPort('NURSEBRIDGE_QA_REALTIME_PORT', 8788);
+if (webPort === realtimePort) throw new Error('The web and realtime QA ports must be different.');
+const baseURL = `http://localhost:${webPort}`;
+const phoneOrigin = `http://localhost:${realtimePort}`;
 const MAX_LOG_BYTES = 16 * 1024 * 1024;
 const children = new Set();
 const listeners = new Set();
@@ -110,7 +120,7 @@ async function listen(port, host, forward = false) {
   if (stopping) throw new Error('Phone QA was interrupted.');
   const server = createServer(socket => {
     if (!forward || !runtimeReady || stopping || sockets.size >= 128) { socket.destroy(); return; }
-    const upstream = connect({ host: '127.0.0.1', port: 8787 });
+    const upstream = connect({ host: '127.0.0.1', port: webPort });
     sockets.add(socket); sockets.add(upstream);
     for (const stream of [socket, upstream]) {
       stream.setTimeout(60_000, () => stream.destroy());
@@ -188,7 +198,7 @@ export default { async fetch(request) {
     assets: { directory: join(root, 'apps/web/.open-next/assets'), binding: 'ASSETS' }, d1_databases: [database], r2_buckets: buckets,
     durable_objects: { bindings: [{ name: 'CALL_SESSIONS', class_name: 'CallSession', script_name: realtimeName }] },
     services: [{ binding: 'REALTIME', service: realtimeName }],
-    vars: { APP_ORIGIN: baseURL, REALTIME_URL: 'ws://localhost:8788', PROVIDER_MODE: 'mock', ALLOW_TEST_DIAGNOSTICS: 'true', MAX_ACTIVE_CALLS_PER_WORKSPACE: '2', MAX_LIVE_CONCURRENCY: '4', DAILY_AUDIO_MINUTES: '120' },
+    vars: { APP_ORIGIN: baseURL, REALTIME_URL: `ws://localhost:${realtimePort}`, PROVIDER_MODE: 'mock', ALLOW_TEST_DIAGNOSTICS: 'true', ALLOW_LOCAL_SANDBOX_ENROLLMENT: 'true', MAX_ACTIVE_CALLS_PER_WORKSPACE: '2', MAX_LIVE_CONCURRENCY: '4', DAILY_AUDIO_MINUTES: '120' },
   });
   const realtime = await save('realtime.json', {
     ...common, name: realtimeName, main: join(root, 'apps/realtime/src/index.ts'), compatibility_flags: ['nodejs_compat'],
@@ -205,7 +215,7 @@ async function waitForRuntime(fixture) {
   const deadline = Date.now() + 120_000;
   while (!stopping && Date.now() < deadline) {
     try {
-      const response = await fetch('http://127.0.0.1:8787/health', { signal: AbortSignal.any([abort.signal, AbortSignal.timeout(2000)]) });
+      const response = await fetch(`http://127.0.0.1:${webPort}/health`, { signal: AbortSignal.any([abort.signal, AbortSignal.timeout(2000)]) });
       if (response.ok) {
         const health = await response.json();
         assert.equal(health.mode, 'mock');
@@ -237,11 +247,11 @@ async function main() {
   await chmod(directory, 0o700);
   console.log(`Phone QA artifacts and logs: ${directory}`);
   // Reserve both families so an existing localhost listener fails immediately.
-  // Keep 8788 as the proxy; release 8787 only when Wrangler is ready to start.
+  // Keep the realtime proxy reserved; release the web port when Wrangler starts.
   const webPorts = [];
   for (const host of ['127.0.0.1', '::1']) {
-    webPorts.push(await listen(8787, host));
-    await listen(8788, host, true);
+    webPorts.push(await listen(webPort, host));
+    await listen(realtimePort, host, true);
   }
   const fixture = await prepare();
   if (!flags.has('--skip-build')) {
@@ -255,7 +265,7 @@ async function main() {
   await checked('migrate', [...wrangler, 'd1', 'migrations', 'apply', 'DB', '--config', fixture.web, '--local', '--persist-to', persistence]);
   await checked('seed', [...wrangler, 'd1', 'execute', 'DB', '--config', fixture.web, '--local', '--persist-to', persistence, '--file', fixture.seed]);
   for (const server of webPorts) await release(server);
-  const runtime = command('runtime', [...wrangler, 'dev', '-c', fixture.gateway, '-c', fixture.web, '-c', fixture.realtime, '-c', fixture.carrier, '--ip', '127.0.0.1', '--port', '8787', '--inspector-port', '0', '--persist-to', persistence, '--local'], { timeout: 0 });
+  const runtime = command('runtime', [...wrangler, 'dev', '-c', fixture.gateway, '-c', fixture.web, '-c', fixture.realtime, '-c', fixture.carrier, '--ip', '127.0.0.1', '--port', String(webPort), '--inspector-port', '0', '--persist-to', persistence, '--local'], { timeout: 0 });
   runtime.done.then(() => {
     if (!stopping) { console.error('Local runtime exited unexpectedly; see runtime.log.'); void cleanup(1); }
   });

@@ -25,7 +25,7 @@ async function command(page: Page, id: string, type: string, data = {}) {
 
 async function join(page: Page): Promise<CallSnapshot> {
   const created = page.waitForResponse(response => new URL(response.url()).pathname === '/api/calls' && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Join demonstration queue' }).click();
+  await page.getByRole('button', { name: 'Join call queue' }).click();
   const response = await created;
   expect(response.status()).toBe(201);
   return (await response.json()).call;
@@ -95,7 +95,7 @@ test('real browser audio resumes, reconnects with one fresh ticket, and releases
     expect(tickets).toBe(ticketsBeforeGap + 1);
 
     await command(page, call.id, 'end'); owned.delete(call.id);
-    await expect(page.getByRole('heading', { name: 'Your demonstration call has ended.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your call has ended.' })).toBeVisible();
     await expect.poll(() => page.evaluate(() => {
       const retained = (window as unknown as AudioProbe).__retainedAudio!;
       return { context: retained.context.state, tracks: retained.tracks.map(track => track.readyState) };
@@ -105,7 +105,7 @@ test('real browser audio resumes, reconnects with one fresh ticket, and releases
     expect(tickets).toBe(ticketsAfterEnd);
     await page.screenshot({ path: testInfo.outputPath('remote-ended.png'), fullPage: true });
 
-    await page.getByRole('button', { name: 'Start another fictional call' }).click();
+    await page.getByRole('button', { name: 'Start another call' }).click();
     const deleted = await join(page); owned.add(deleted.id);
     await expect.poll(async () => (await state(page)).connection).toBe('connected');
     await page.getByRole('button', { name: 'Skip automated intake · request a person' }).click();
@@ -118,7 +118,7 @@ test('real browser audio resumes, reconnects with one fresh ticket, and releases
     });
     const deletion = await page.request.delete(`${baseURL}/api/calls/${deleted.id}`, { headers: { Origin: origin }, data: { commandId: crypto.randomUUID() } });
     expect(deletion.status()).toBe(200); owned.delete(deleted.id);
-    await expect(page.getByRole('heading', { name: 'Your demonstration call was deleted.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your call was deleted.' })).toBeVisible();
     await expect.poll(() => page.evaluate(() => {
       const retained = (window as unknown as AudioProbe).__retainedAudio!;
       return { context: retained.context.state, tracks: retained.tracks.map(track => track.readyState), socket: retained.socket.readyState };

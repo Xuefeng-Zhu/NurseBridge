@@ -41,7 +41,7 @@ async function audioBrowser(frequency: 440 | 660): Promise<{ browser: Browser; c
 async function workspace(page: Page): Promise<void> {
   await page.goto(`${baseURL}/demo`);
   const created = page.waitForResponse(response => response.url().endsWith('/api/demo/session') && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Create your private demo workspace' }).click();
+  await page.getByRole('button', { name: 'Create local workspace' }).click();
   expect((await created).status()).toBe(201);
   await expect(page.getByText('Your isolated workspace is ready')).toBeVisible();
   await page.goto(`${baseURL}/nurse`);
@@ -55,14 +55,14 @@ async function invite(admin: Page, caller: Page): Promise<string> {
   await expect(link).toBeVisible();
   const url = (await link.getAttribute('href'))!;
   await caller.goto(url);
-  await expect(caller.getByRole('button', { name: 'Join demonstration queue' })).toBeEnabled();
+  await expect(caller.getByRole('button', { name: 'Join call queue' })).toBeEnabled();
   await admin.goto(`${baseURL}/nurse`);
   return url;
 }
 
 async function join(caller: Page): Promise<CallSnapshot> {
   const created = caller.waitForResponse(response => response.url().endsWith('/api/calls') && response.request().method() === 'POST');
-  await caller.getByRole('button', { name: 'Join demonstration queue' }).click();
+  await caller.getByRole('button', { name: 'Join call queue' }).click();
   const response = await created;
   expect(response.status()).toBe(201);
   return (await response.json()).call as CallSnapshot;
@@ -100,7 +100,7 @@ test('visible intake preserves evidence and corrections, then relays both distin
     const call = await join(caller.page);
     expect(call.intakeState).toBe('NOT_STARTED');
     expect(call.queueState).toBe('WAITING');
-    await expect(caller.page.getByText('Simulation only — use fictional patient information. Not for medical care.')).toBeVisible();
+    await expect(caller.page.getByText('Clinical use requires completed release approval. Do not enter patient information.')).toBeVisible();
     await expect(nurse.page.getByText(`Caller ${call.id.slice(-4).toUpperCase()}`, { exact: true }).first()).toBeVisible();
     await caller.page.getByRole('checkbox').check();
     await expect(caller.page.getByRole('button', { name: 'Enable microphone & start intake' })).toBeEnabled();
@@ -113,8 +113,8 @@ test('visible intake preserves evidence and corrections, then relays both distin
       'I need to correct that: the headache started this morning, not yesterday.',
     ];
     for (let index = 0; index < lines.length; index++) {
-      await caller.page.getByLabel('Fictional caller turn').fill(lines[index]!);
-      await caller.page.getByRole('button', { name: 'Replay fictional turn' }).click();
+      await caller.page.getByLabel('Caller transcript').fill(lines[index]!);
+      await caller.page.getByRole('button', { name: 'Replay transcript' }).click();
       await expect.poll(async () => (await snapshot(caller.page, call.id)).turns.length).toBe(index + 1);
       await expect.poll(async () => (await snapshot(caller.page, call.id)).facts.length).toBeGreaterThan(0);
     }
@@ -132,8 +132,8 @@ test('visible intake preserves evidence and corrections, then relays both distin
     await caller.page.screenshot({ path: testInfo.outputPath('caller-intake.png'), fullPage: true });
 
     // Trigger an approved question with an audible220Hz mock cue, then interrupt it.
-    await caller.page.getByLabel('Fictional caller turn').fill('I do not take medication.');
-    await caller.page.getByRole('button', { name: 'Replay fictional turn' }).click();
+    await caller.page.getByLabel('Caller transcript').fill('I do not take medication.');
+    await caller.page.getByRole('button', { name: 'Replay transcript' }).click();
     await expect.poll(async () => Math.abs(frequency(await diagnostics(caller.page)) - 220)).toBeLessThan(12);
     expect(Number((await diagnostics(caller.page)).queuedSamples)).toBeGreaterThan(0);
     await expect(nurse.page.getByRole('button', { name: 'Take over call' })).toBeEnabled();
@@ -233,7 +233,7 @@ test('completed collection ends automation and keeps the caller waiting within t
   expect(['idle', 'ended']).toContain(waiting.providerSession.status);
   await expect(page.getByRole('status').filter({ hasText: /^WAITING FOR A NURSE$/ })).toBeVisible();
   await expect(page.getByText(/automated intake is complete/i)).toBeVisible();
-  await expect(page.getByText(/Overall demo time remaining/)).toBeVisible();
+  await expect(page.getByText(/Call time remaining/)).toBeVisible();
 
   let sessionReadInterrupted = false;
   await page.route('**/api/demo/session', async route => {

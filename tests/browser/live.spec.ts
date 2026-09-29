@@ -1,4 +1,4 @@
-import { chromium, expect, test, type Browser, type BrowserContext, type BrowserServer, type Page } from '@playwright/test';
+import { chromium, expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
@@ -8,8 +8,8 @@ const origin = new URL(baseURL).origin;
 
 test.skip(process.env.NURSEBRIDGE_LIVE_E2E !== '1', 'Requires explicit fictional live-provider opt-in and local Workers in live mode.');
 
-async function participant(fixture: string): Promise<{ server: BrowserServer; browser: Browser; context: BrowserContext; page: Page }> {
-  const server = await chromium.launchServer({
+async function participant(fixture: string): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
+  const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
     args: [
@@ -20,11 +20,10 @@ async function participant(fixture: string): Promise<{ server: BrowserServer; br
     ],
   });
   try {
-    const browser = await chromium.connect(server.wsEndpoint());
     const context = await browser.newContext({ baseURL, permissions: ['microphone'] });
-    return { server, browser, context, page: await context.newPage() };
+    return { browser, context, page: await context.newPage() };
   } catch (error) {
-    await server.kill();
+    await browser.close();
     throw error;
   }
 }
@@ -37,6 +36,17 @@ async function snapshot(page: Page, callId: string): Promise<CallSnapshot> {
 
 async function diagnostics(page: Page): Promise<Record<string, unknown>> {
   return page.evaluate(() => (window as unknown as { __nursebridgeDiagnostics?: Record<string, unknown> }).__nursebridgeDiagnostics ?? {});
+}
+
+async function audibleHumanAudio(page: Page): Promise<Record<string, unknown>> {
+  let proof: Record<string, unknown> = {};
+  // The speech fixture includes pauses and loops. Sample while speech is
+  // actually playing so silent PCM cannot satisfy the handoff assertion.
+  await expect.poll(async () => {
+    proof = await diagnostics(page);
+    return Number(proof.humanSamplesInEpoch ?? 0) > 1000 && Number(proof.rms ?? 0) > 0.02;
+  }, { timeout: 40_000, message: 'Human audio must contain a non-silent playback window' }).toBe(true);
+  return proof;
 }
 
 async function transportDiagnostics(page: Page): Promise<{ sentFrames: number; epoch: number; credits: number; microphone: string }> {
@@ -122,14 +132,16 @@ async function waitForLiveMilestone(page: Page, callId: string, name: string, pr
 }
 
 test('fictional speech reaches AssemblyAI and Nebius before two-way nurse takeover', async ({}, testInfo) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
+  expect(new URL(baseURL).protocol, 'Live audio acceptance must remain local').toBe('http:');
+  expect(['localhost', '127.0.0.1', '[::1]']).toContain(new URL(baseURL).hostname);
   const startedAt = Date.now();
   const caller = await participant('fictional-caller-speech.wav');
   let nurse: Awaited<ReturnType<typeof participant>>;
   try {
     nurse = await participant('microphone-660hz.wav');
   } catch (error) {
-    await caller.server.kill();
+    await caller.browser.close();
     throw error;
   }
   let callId: string | undefined;
@@ -139,8 +151,9 @@ test('fictional speech reaches AssemblyAI and Nebius before two-way nurse takeov
     page.on('pageerror', error => failures.push(`${role}: ${error.message}`));
   }
   try {
-    await nurse.page.goto('/demo');
-    await nurse.page.getByRole('button', { name: 'Create your private demo workspace' }).click();
+    await nurse.page.goto('/workspace');
+    await expect(nurse.page).toHaveTitle('NurseBridge · The intake workspace');
+    await nurse.page.getByRole('button', { name: 'Create local workspace' }).click();
     await expect(nurse.page.getByText('Your isolated workspace is ready')).toBeVisible();
     const session = await (await nurse.page.request.get(`${baseURL}/api/demo/session`)).json() as { mode: string; diagnostics: boolean };
     expect(session.mode).toBe('live');
@@ -149,10 +162,10 @@ test('fictional speech reaches AssemblyAI and Nebius before two-way nurse takeov
     const invitation = nurse.page.locator('.invitation-result a');
     await expect(invitation).toBeVisible();
     await caller.page.goto((await invitation.getAttribute('href'))!);
-    await expect(caller.page.getByRole('button', { name: 'Join demonstration queue' })).toBeEnabled();
+    await expect(caller.page.getByRole('button', { name: 'Join call queue' })).toBeEnabled();
     await nurse.page.goto('/nurse');
     const created = caller.page.waitForResponse(response => response.url().endsWith('/api/calls') && response.request().method() === 'POST');
-    await caller.page.getByRole('button', { name: 'Join demonstration queue' }).click();
+    await caller.page.getByRole('button', { name: 'Join call queue' }).click();
     const call = (await (await created).json()).call as CallSnapshot;
     callId = call.id;
     expect(call.mode).toBe('live');
@@ -189,12 +202,18 @@ test('fictional speech reaches AssemblyAI and Nebius before two-way nurse takeov
     await waitForLiveMilestone(caller.page, call.id, 'Final caller transcript', state => state.turns.some(turn => turn.final && /headache/i.test(turn.text)), 55_000);
     stage = 'Nebius evidence extraction';
     await waitForLiveMilestone(caller.page, call.id, 'Nebius evidence extraction', state => state.facts.some(fact => fact.evidence.some(source => /headache/i.test(source.quote))), 35_000);
+    stage = 'agent response to caller';
+    await waitForLiveMilestone(caller.page, call.id, 'Agent response to caller', state => {
+      const turn = state.turns.find(turn => turn.final && /headache/i.test(turn.text));
+      return Boolean(turn && state.assistantTurns.some(reply => reply.final && reply.text.trim() && reply.at >= turn.at));
+    }, 30_000);
     const intake = await snapshot(caller.page, call.id);
     expect(intake.providerSession.id).toBeTruthy();
     expect(intake.assistantTurns.length).toBeGreaterThan(0);
     for (const fact of intake.facts) for (const evidence of fact.evidence) {
       expect(intake.turns.find(turn => turn.id === evidence.turnId)?.text).toContain(evidence.quote);
     }
+    await testInfo.attach('live-intake.png', { body: await nurse.page.screenshot(), contentType: 'image/png' });
 
     stage = 'nurse takeover';
     await expect(nurse.page.getByRole('button', { name: 'Take over call' })).toBeEnabled();
@@ -203,27 +222,27 @@ test('fictional speech reaches AssemblyAI and Nebius before two-way nurse takeov
     const connected = await snapshot(caller.page, call.id);
     expect(connected.conversationOwner).toBe('NURSE');
     expect(connected.providerSession.status).toBe('ended');
-    await expect.poll(async () => Number((await diagnostics(caller.page)).humanSamplesInEpoch ?? 0), { timeout: 15_000 }).toBeGreaterThan(1000);
-    await expect.poll(async () => Number((await diagnostics(nurse.page)).humanSamplesInEpoch ?? 0), { timeout: 15_000 }).toBeGreaterThan(1000);
-    for (const page of [caller.page, nurse.page]) {
-      const proof = await diagnostics(page);
+    const [callerAudio, nurseAudio] = await Promise.all([audibleHumanAudio(caller.page), audibleHumanAudio(nurse.page)]);
+    for (const proof of [callerAudio, nurseAudio]) {
       expect(proof.controlEpoch).toBe(connected.controlEpoch);
       expect(proof.agentSamplesInEpoch).toBe(0);
     }
+    await testInfo.attach('live-nurse-takeover.png', { body: await nurse.page.screenshot(), contentType: 'image/png' });
     const evidence = {
       callId: call.id,
       providerSessionId: intake.providerSession.id,
       finalizedCallerTurns: intake.turns.filter(turn => turn.final).length,
       evidenceLinkedFacts: intake.facts.length,
       assistantTurns: intake.assistantTurns.length,
+      agentRespondedAfterCaller: true,
       speechStartToFinalTranscriptMs: (() => {
         const speech = intake.timeline.find(event => event.type === 'caller-speaking');
         const final = intake.timeline.find(event => event.type === 'transcript-final' && (!speech || event.at >= speech.at));
         return speech && final ? final.at - speech.at : null;
       })(),
       timings: connected.timings,
-      callerAudio: await diagnostics(caller.page),
-      nurseAudio: await diagnostics(nurse.page),
+      callerAudio,
+      nurseAudio,
     };
     const path = testInfo.outputPath('fictional-live-proof.json');
     await writeFile(path, JSON.stringify(evidence, null, 2));
@@ -231,17 +250,40 @@ test('fictional speech reaches AssemblyAI and Nebius before two-way nurse takeov
     expect(failures).toEqual([]);
   } finally {
     console.log(`Fictional live E2E reached ${stage} at ${Date.now() - startedAt} ms`);
-    if (callId) {
-      const finalState = await snapshot(caller.page, callId).catch(() => undefined);
-      if (finalState) {
-        await testInfo.attach('fictional-live-final-snapshot.json', {
-          body: Buffer.from(JSON.stringify(finalState, null, 2)), contentType: 'application/json',
+    try {
+      if (callId) {
+        const finalState = await snapshot(caller.page, callId).catch(() => undefined);
+        if (finalState) {
+          await testInfo.attach('fictional-live-final-snapshot.json', {
+            body: Buffer.from(JSON.stringify(finalState, null, 2)), contentType: 'application/json',
+          });
+        }
+        // End alone retains provider history until expiry. Delete only this
+        // test-created case so its durable provider cleanup runs immediately.
+        await caller.page.request.post(`${baseURL}/api/calls/${callId}/end`, { headers: { Origin: origin }, data: { commandId: crypto.randomUUID() }, timeout: 5_000 }).catch(() => undefined);
+        const removed = await nurse.page.request.delete(`${baseURL}/api/calls/${callId}`, {
+          headers: { Origin: origin }, data: { commandId: crypto.randomUUID() }, timeout: 20_000,
         });
+        const inaccessible = await nurse.page.request.get(`${baseURL}/api/calls/${callId}`, { timeout: 5_000 });
+        await testInfo.attach('live-case-cleanup.json', {
+          body: Buffer.from(JSON.stringify({ deletionStatus: removed.status(), subsequentReadStatus: inaccessible.status() })),
+          contentType: 'application/json',
+        });
+        expect(removed.ok(), 'Test case deletion must succeed before shutdown').toBe(true);
+        expect([404, 410]).toContain(inaccessible.status());
       }
-      await caller.page.request.post(`${baseURL}/api/calls/${callId}/end`, { headers: { Origin: origin }, data: { commandId: crypto.randomUUID() }, timeout: 5_000 }).catch(() => undefined);
+    } finally {
+      // Stop capture/worklets before closing the directly owned browsers.
+      try {
+        const closed = await Promise.allSettled([caller, nurse].map(async participant => {
+          await participant.page.evaluate(() => (window as unknown as { __nursebridge?: { close(): void } }).__nursebridge?.close()).catch(() => undefined);
+          await participant.context.close();
+        }));
+        const failed = closed.find(result => result.status === 'rejected');
+        if (failed?.status === 'rejected') throw failed.reason;
+      } finally {
+        await Promise.all([caller.browser.close(), nurse.browser.close()]);
+      }
     }
-    // Chrome's fake audio device can leave navigation/browser.close pending even
-    // after the call has ended. These isolated test processes belong to us.
-    await Promise.all([caller.server.kill(), nurse.server.kill()]);
   }
 });

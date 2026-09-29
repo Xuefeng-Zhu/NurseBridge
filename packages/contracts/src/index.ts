@@ -1,6 +1,6 @@
 import { z } from 'zod';
-export const DISCLOSURE = 'Simulation only — use fictional patient information. Not for medical care.';
-export const EMERGENCY_COPY = 'This demonstration does not provide emergency care. For a real emergency, contact emergency services.';
+export const DISCLOSURE = 'Use sample patient information only. Not for medical care.';
+export const EMERGENCY_COPY = 'This service does not provide emergency care. For an emergency, contact emergency services.';
 export const RECORDING_DISCLOSURE_VERSION = 'voice-agent-recording-v1';
 export const RECORDING_DISCLOSURE = 'Automated intake sends your fictional audio to AssemblyAI, which may record the intake, and uses Nebius to process the conversation. Use fictional information only. You can decline and wait for a nurse.';
 export const RoleSchema = z.enum(['admin', 'nurse', 'caller']);

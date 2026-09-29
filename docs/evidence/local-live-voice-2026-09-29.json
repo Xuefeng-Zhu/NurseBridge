@@ -1,0 +1,61 @@
+{
+  "verifiedOn": "2026-09-29",
+  "environment": "Normal local app at http://localhost:8787 with live AssemblyAI and Nebius",
+  "browser": "Playwright Chromium headless shell 148.0.7778.96",
+  "runner": {
+    "result": "passed",
+    "tests": 1,
+    "durationSeconds": 30.1,
+    "automaticShutdown": true
+  },
+  "finalizedCallerTurns": 1,
+  "evidenceLinkedFacts": 1,
+  "assistantTurns": 2,
+  "agentRespondedAfterCaller": true,
+  "speechStartToFinalTranscriptMs": 1305,
+  "timings": {
+    "firstAudioReadyMs": 966,
+    "firstAudioPlaybackMs": 983,
+    "extractionMs": 1341,
+    "handoffMs": 137
+  },
+  "callerAudio": {
+    "receivedFrames": 1081,
+    "playedSamples": 527136,
+    "rms": 0.10751524331478475,
+    "underruns": 3,
+    "droppedFrames": 0,
+    "queuedSamples": 3072,
+    "dominantFrequency": 660.5113636363636,
+    "zeroCrossings": 155,
+    "controlEpoch": 2,
+    "agentSamplesInEpoch": 0,
+    "humanSamplesInEpoch": 11264
+  },
+  "nurseAudio": {
+    "receivedFrames": 8,
+    "playedSamples": 14592,
+    "rms": 0.08990577044380249,
+    "underruns": 0,
+    "droppedFrames": 0,
+    "queuedSamples": 4544,
+    "dominantFrequency": 438.82978723404256,
+    "zeroCrossings": 110,
+    "controlEpoch": 2,
+    "agentSamplesInEpoch": 0,
+    "humanSamplesInEpoch": 14592
+  },
+  "cleanup": {
+    "queueState": "CLOSED",
+    "deleted": true,
+    "owner": "NONE",
+    "providerStatus": "ended",
+    "pendingProviderDeletions": 0,
+    "unresolvedProviderConnections": 0
+  },
+  "limitations": [
+    "Recorded microphone inputs; physical-device audibility and echo not measured.",
+    "Provider deletion is logical API deletion, not physical erasure or backup-expiry proof.",
+    "No PSTN call or hosted deployment was exercised."
+  ]
+}

@@ -111,7 +111,7 @@ describe('signed inbound telephone admission', () => {
 
   it('keeps a projected caller visible without a browser session and never presents mock tones as automated phone intake', async () => {
     const response = await send(); const body = await response.text();
-    expect(body).toContain('This is a fictional demonstration, not medical care.'); expect(body).toContain('Automated intake is unavailable'); expect(body).toContain('<Connect><Stream'); expect(body).toContain('<Parameter name="token"'); expect(body).toContain('</Connect><Hangup/>'); expect(body).not.toContain('<Gather');
+    expect(body).toContain('Use sample patient information only. Not for medical care.'); expect(body).toContain('Automated intake is unavailable'); expect(body).toContain('<Connect><Stream'); expect(body).toContain('<Parameter name="token"'); expect(body).toContain('</Connect><Hangup/>'); expect(body).not.toContain('<Gather');
     const call = await snapshot();
     expect(call).toMatchObject({ channel: 'phone', consent: false, humanRequested: true, queueState: 'WAITING', waitingReason: 'technical_failure' });
     expect(call.providerSession.status).not.toBe('active');

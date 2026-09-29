@@ -77,7 +77,7 @@ export function nextQuestion(state:CallState,proposed?:string|null){
 export function transition(state:CallState,command:Command,now:number){
  if(command.workspaceId!==state.workspaceId)fail(404,'not_found','Call not found.');
  if(state.deleted)fail(410,'deleted','Call has been deleted.');
- if(now>=state.callDeadlineAt&&!['delete','review','acknowledge-escalation'].includes(command.type))fail(409,'call_expired','The demonstration call time limit has been reached.');
+ if(now>=state.callDeadlineAt&&!['delete','review','acknowledge-escalation'].includes(command.type))fail(409,'call_expired','The call time limit has been reached.');
  if(command.expectedRevision!==undefined&&command.expectedRevision!==state.controlRevision)fail(409,'revision_conflict','The call changed. Refresh and try again.');
  const staff=command.role==='nurse'||command.role==='admin';
  const caller=command.participantId===state.callerParticipantId;
@@ -116,7 +116,7 @@ export function transition(state:CallState,command:Command,now:number){
   case 'delete':if(command.role!=='admin')fail(403,'forbidden','Staff deletion required.');state.queueState='CLOSED';state.conversationOwner='NONE';state.aiStatus='stopped';state.deleted=true;state.controlEpoch++;state.responseGeneration++;break;
   case 'intake':if(!staff)fail(403,'forbidden','Only a nurse can revise the draft.');break;
   case 'confirm':if(!caller)fail(403,'forbidden','Only the caller can confirm their words.');state.facts.forEach(f=>{f.patientConfirmed=true;});break;
-  case 'mock-turn':if(state.mode!=='mock')fail(400,'not_mock','Fixtures are disabled in live mode.');break;
+  case 'mock-turn':if(state.mode!=='mock')fail(400,'not_mock','Replay input is disabled in live mode.');break;
   default:fail(400,'unknown_command','Unknown call command.');
  }
  state.controlRevision++;

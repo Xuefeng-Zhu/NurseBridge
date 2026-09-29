@@ -1,0 +1,61 @@
+{
+  "verifiedOn": "2026-09-29",
+  "environment": "Isolated local Workers runtime with live AssemblyAI and Nebius providers",
+  "input": "Repository speech recording and separate nurse tone microphone",
+  "runner": {
+    "result": "passed",
+    "tests": 1,
+    "callAssertionsCompletedMs": 34036,
+    "shutdown": "Chrome update helpers inherited test stderr; the identified helper processes were stopped to allow successful runner exit."
+  },
+  "finalizedCallerTurns": 1,
+  "evidenceLinkedFacts": 1,
+  "assistantTurns": 3,
+  "speechStartToFinalTranscriptMs": 1210,
+  "timings": {
+    "firstAudioReadyMs": 1023,
+    "firstAudioPlaybackMs": 1065,
+    "extractionMs": 1434,
+    "handoffMs": 148
+  },
+  "callerAudio": {
+    "receivedFrames": 899,
+    "playedSamples": 433536,
+    "rms": 0.11395579847380867,
+    "underruns": 2,
+    "droppedFrames": 0,
+    "queuedSamples": 4096,
+    "dominantFrequency": 660.9375,
+    "zeroCrossings": 141,
+    "controlEpoch": 2,
+    "agentSamplesInEpoch": 0,
+    "humanSamplesInEpoch": 10240
+  },
+  "nurseAudio": {
+    "receivedFrames": 2,
+    "playedSamples": 3328,
+    "rms": 0,
+    "underruns": 0,
+    "droppedFrames": 0,
+    "queuedSamples": 1408,
+    "dominantFrequency": 0,
+    "zeroCrossings": 0,
+    "controlEpoch": 2,
+    "agentSamplesInEpoch": 0,
+    "humanSamplesInEpoch": 3328
+  },
+  "cleanup": {
+    "testCasesChecked": 2,
+    "caseDeletionHttpStatus": 200,
+    "subsequentReadHttpStatus": 410,
+    "pendingProviderDeletions": 0,
+    "unresolvedProviderConnections": 0,
+    "temporaryCredentialCopyRemoved": true,
+    "providerDeletionScope": "Provider API logical deletion; physical erasure and backup expiry not verified."
+  },
+  "limits": [
+    "Playback processor counters establish PCM transport, not physical audibility or intelligibility.",
+    "The nurse playback snapshot has zero RMS; sustained audible caller-to-nurse speech after takeover was not established by this recording.",
+    "PSTN, physical devices, production account controls, and production deployment were not exercised."
+  ]
+}

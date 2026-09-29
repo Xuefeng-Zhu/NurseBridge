@@ -1,13 +1,13 @@
 # Inbound phone calls
 
-NurseBridge can receive a Twilio Voice call and connect its audio to a nurse in the existing browser workspace. The caller needs an ordinary telephone. The nurse uses the existing microphone, queue, claim and end-call controls. This remains a fictional demonstration, not a clinical service.
+NurseBridge can receive a Twilio Voice call and connect its audio to a nurse in the existing browser workspace. The caller needs an ordinary telephone. The nurse uses the existing microphone, queue, claim and end-call controls.
 
-The carrier connection is independent of automated intake. When live AI is unavailable or its recording checks have not passed, callers hear that limitation and enter the human queue. Mock AI tones and fixture transcripts are never presented as a telephone assistant. Pressing 0 requests a person. When live AI is fully enabled, a spoken disclosure asks for DTMF 1 to accept automated intake and possible provider recording; 0, another digit or timeout routes to a person.
+The carrier connection is independent of automated intake. When live AI is unavailable or its recording checks have not passed, callers hear that limitation and enter the human queue. If automated intake is unavailable, callers are routed to a person without generated responses. Pressing 0 requests a person. When live AI is fully enabled, a spoken disclosure asks for DTMF 1 to accept automated intake and possible provider recording; 0, another digit or timeout routes to a person.
 
 ## Operator setup
 
 1. Deploy web and realtime to your own HTTPS hosts following [deployment](deployment.md), including D1 migration `0002_phone_inbound.sql`. Both Workers must share the same D1 database. Keep the realtime Worker’s `nodejs_compat` flag; webhook authentication uses the official Twilio SDK.
-2. Create a workspace in the deployed app. Open Settings as its administrator and copy **Workspace ID for phone routing**. Keep the nurse workspace open with audio enabled. Demo staff sessions expire after four hours and workspaces after seven days; this implementation does not introduce permanent staff accounts.
+2. Complete the managed staff and workspace provisioning requirements in [production readiness](production-readiness.md) before enabling a hosted phone route. Public workspace creation is disabled on hosted environments. Staff need an authorized workspace membership and a verified Access identity; no managed provisioning or renewal flow is implemented yet. Do not use test cookies or database seeding as production onboarding. For local protocol tests, the isolated harness provisions test fixtures automatically. Existing sessions expire after four hours and workspaces after seven days. Once a supported hosted workflow exists, Settings exposes **Workspace ID for phone routing** to the workspace administrator.
 3. Configure these **realtime** variables for the intended environment. Numbers below are examples; use your own Twilio Voice-capable number in E.164 format and the workspace ID from step 2.
 
    ```json
@@ -22,7 +22,7 @@ The carrier connection is independent of automated intake. When live AI is unava
    }
    ```
 
-   `TWILIO_PUBLIC_ORIGIN` is the exact public realtime origin without a path or trailing slash. Match workspace limits between web and realtime. Number routing is operator-owned server configuration; a public demo workspace cannot assign itself someone else’s phone number. Settings reports configuration presence, not a verified route or telephone call.
+   `TWILIO_PUBLIC_ORIGIN` is the exact public realtime origin without a path or trailing slash. Match workspace limits between web and realtime. Number routing is operator-owned server configuration; a workspace member cannot assign the workspace someone else’s phone number. Settings reports configuration presence, not a verified route or telephone call.
 4. Store the matching account’s auth token as a realtime secret, never in source or the browser:
 
    ```sh
@@ -30,7 +30,7 @@ The carrier connection is independent of automated intake. When live AI is unava
    ```
 
 5. In the owned number’s Twilio Voice configuration, set **A call comes in** to a POST webhook at `https://realtime.example.com/phone/twilio/voice`. Set the call status callback to POST `https://realtime.example.com/phone/twilio/status`. Ensure Twilio can reach these endpoints and `/phone/connect/*` without a browser login or Cloudflare Access challenge; each request is independently authenticated. The consent action URL is generated automatically.
-6. Deploy the updated realtime configuration, call the number with fictional information, select the phone case in the nurse browser, enable audio, and claim it. Verify speech in both directions, DTMF 0, caller hangup, browser End call, and terminal status delivery before sharing the number. Confirm the call is completed in Twilio after each test.
+6. Deploy the updated realtime configuration, call the number with test data, select the phone case in the nurse browser, enable audio, and claim it. Verify speech in both directions, DTMF 0, caller hangup, browser End call, and terminal status delivery before sharing the number. Confirm the call is completed in Twilio after each test.
 
 Setting `PROVIDER_MODE=mock` disables paid AI, **not carrier charges**. An enabled real phone number still uses Twilio. Phone-to-nurse operation does not require enabling live AI. Automated intake additionally requires the existing [Voice Agent activation and recording checks](voice-agent.md); the local `FICTIONAL_LIVE_TEST` bypass does not enable public phone AI. This integration does not request Twilio call recording or dial outbound numbers.
 
@@ -45,9 +45,9 @@ Setting `PROVIDER_MODE=mock` disables paid AI, **not carrier charges**. An enabl
 
 ## Verification boundaries
 
-Automated tests validate signed webhook routing, isolated quotas, replay rejection, consent behavior, lifecycle cleanup, codecs and a local simulated Twilio stream connected to a real Chrome nurse microphone/playback path. They do not place a PSTN call, verify an owned number, deploy a public endpoint, or establish physical-device audio quality. See [test results](test-results.md) for executed evidence.
+Automated tests validate signed webhook routing, isolated quotas, replay rejection, consent behavior, lifecycle cleanup, codecs and a local Twilio protocol test stream connected to a real Chrome nurse microphone/playback path. They do not place a PSTN call, verify an owned number, deploy a public endpoint, or establish physical-device audio quality. See [test results](test-results.md) for executed evidence.
 
-Run `PLAYWRIGHT_CHANNEL=chrome pnpm test:phone` with ports 8787/8788 free. The harness builds the app, migrates a fresh temporary database, seeds a fictional staff session and route, starts the isolated Workers runtime, runs the phone browser test and stops its own services. Add `-- --all` for the full browser suite or `-- --skip-build` only after building the current source. Its temporary directory preserves logs, screenshots and audio measurements.
+Run `PLAYWRIGHT_CHANNEL=chrome pnpm test:phone` with ports 8787/8788 free, or choose separate ports with `NURSEBRIDGE_QA_WEB_PORT=8987 NURSEBRIDGE_QA_REALTIME_PORT=8988`. The harness builds the app, migrates a fresh temporary database, seeds a test staff session and route, starts the isolated Workers runtime, runs the phone browser test and stops its own services. Add `-- --all` for the full browser suite or `-- --skip-build` only after building the current source. Its temporary directory preserves logs, screenshots and audio measurements.
 
 The underlying `tests/browser/phone.spec.ts` is opt-in (`NURSEBRIDGE_PHONE_E2E=1`) and refuses non-loopback or live-AI targets. The QA runtime binds `TWILIO_HTTP` to a local completion stub so failure cleanup cannot reach the carrier. Production uses the fixed Twilio API endpoint and must not bind this test service.
 

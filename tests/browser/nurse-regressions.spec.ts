@@ -18,7 +18,7 @@ async function snapshot(page: Page, id: string): Promise<CallSnapshot> {
 
 async function workspace(page: Page) {
   await page.goto(`${baseURL}/demo`);
-  await page.getByRole('button', { name: 'Create your private demo workspace' }).click();
+  await page.getByRole('button', { name: 'Create local workspace' }).click();
   await expect(page.getByText('Your isolated workspace is ready')).toBeVisible();
   const session = await (await page.request.get(`${baseURL}/api/demo/session`)).json() as { mode: string; diagnostics: boolean };
   expect(session.mode, 'These regressions use fictional mock data only').toBe('mock');
@@ -51,7 +51,7 @@ test('switching fact editors preserves the target field and context tabs support
   await workspace(page);
   await page.getByRole('checkbox').check();
   const created = page.waitForResponse(response => response.url().endsWith('/api/calls') && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Launch fictional replay case' }).click();
+  await page.getByRole('button', { name: 'Launch replay case' }).click();
   const { call } = await (await created).json() as { call: CallSnapshot };
   await expect(page.getByRole('button', { name: 'Replay case created' })).toBeVisible();
   await expect.poll(async () => (await snapshot(page, call.id)).facts.length).toBeGreaterThan(3);
@@ -109,9 +109,9 @@ test('reviewing another case during claim and conversation preserves active audi
     const invitation = nurse.page.locator('.invitation-result a');
     await expect(invitation).toBeVisible();
     await caller.page.goto((await invitation.getAttribute('href'))!);
-    await expect(caller.page.getByRole('button', { name: 'Join demonstration queue' })).toBeEnabled();
+    await expect(caller.page.getByRole('button', { name: 'Join call queue' })).toBeEnabled();
     const callCreated = caller.page.waitForResponse(response => response.url().endsWith('/api/calls') && response.request().method() === 'POST');
-    await caller.page.getByRole('button', { name: 'Join demonstration queue' }).click();
+    await caller.page.getByRole('button', { name: 'Join call queue' }).click();
     const { call } = await (await callCreated).json() as { call: CallSnapshot };
     await caller.page.getByRole('button', { name: 'Skip automated intake · request a person' }).click();
     await caller.page.getByRole('button', { name: 'Enable microphone & output for handoff' }).click();

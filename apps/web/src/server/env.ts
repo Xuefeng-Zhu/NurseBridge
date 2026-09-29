@@ -49,6 +49,7 @@ export interface AppEnv {
     REALTIME_URL: string;
     PROVIDER_MODE: Mode;
     ALLOW_TEST_DIAGNOSTICS?: string;
+    ALLOW_LOCAL_SANDBOX_ENROLLMENT?: string;
     TURNSTILE_SECRET_KEY?: string;
     TURNSTILE_SITE_KEY?: string;
     ACCESS_ISSUER?: string;

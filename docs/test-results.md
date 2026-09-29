@@ -1,5 +1,73 @@
 # Test results
 
+## Normal local app enabled and verified on 2026-09-29
+
+The app at `http://localhost:8787` now runs in live provider mode using ignored local configuration; its health endpoint reports live activation ready. The local-only acceptance exception is enabled on exact loopback origins. Hosted activation checks and recording-control verification flags remain unchanged. The caller screen is ready to start a new call, and the configuration persists across `pnpm dev` restarts.
+
+`NURSEBRIDGE_BASE_URL=http://localhost:8787 NURSEBRIDGE_LIVE_E2E=1 pnpm exec playwright test tests/browser/live.spec.ts --workers=1 --reporter=list` passed in **30.1 seconds** against that normal app, using the installed Playwright headless shell. The browser and runner exited automatically. Branded Chrome's updater delay from the earlier run is avoided by leaving `PLAYWRIGHT_CHANNEL` unset.
+
+| Live-call check | Observed result |
+| --- | --- |
+| First agent audio ready / playback | 966 ms / 983 ms |
+| Final caller transcript | 1 turn; 1,305 ms from speech start |
+| Evidence-linked extraction | 1 fact; 1,341 ms |
+| Agent response after the caller's finalized turn | Passed; 2 assistant turns recorded |
+| Nurse takeover | 137 ms |
+| Human audio after takeover | Both receiving worklets rendered non-silent audio above RMS 0.02 |
+| Stale agent samples after takeover | 0 in both receiving proofs |
+| Dropped frames | 0 in both receiving proofs |
+| Playback underruns | Caller 3; nurse 0 |
+| Case and provider cleanup | Deleted/closed; no pending provider deletions or unresolved connections |
+
+The [redacted local live evidence](evidence/local-live-voice-2026-09-29.json) contains the measurements and cleanup receipt. The live test now waits for an agent reply after caller speech and non-silent playback in each handoff direction, so silent PCM no longer satisfies the handoff check. The visible local workspace reports Live provider mode, and its caller page presents an enabled Join call queue action. That caller screen was visually inspected at 1280×720 with no framework overlay or browser console errors.
+
+Restored calls retain their original mode. A caller UI fix uses the saved mode for disclosures and shows end/restart guidance if the runtime has changed modes; it disables incompatible automation while retaining human and end-call controls. Both isolated browser regressions passed in 2.9 seconds, with no console or page errors and no provider calls. The web typecheck, focused ESLint, rebuilt OpenNext bundle, and `git diff --check` passed.
+
+This verifies the local browser voice path with recorded microphone inputs. Physical-device audibility, echo, PSTN delivery, hosted operation and production recording controls remain separate acceptance work. No deployment was performed.
+
+## Live voice verification on 2026-09-29
+
+The live browser acceptance test passed against an isolated local Workers runtime using the configured AssemblyAI Voice Agent and Nebius extraction service. A repository speech recording entered through Chrome's microphone capture and the application's audio transport. The agent returned audio, one caller turn was finalized, one intake fact linked to exact transcript evidence, and three assistant turns were recorded. Nurse takeover completed and both receiving AudioWorklets consumed human-channel PCM with zero stale agent samples.
+
+| Measurement | Observed result |
+| --- | --- |
+| First agent audio ready / browser playback | 1,023 ms / 1,065 ms |
+| Speech start to finalized transcript | 1,210 ms |
+| Evidence extraction | 1,434 ms |
+| Nurse takeover through both playback acknowledgments | 148 ms |
+| Caller / nurse human-channel samples after takeover | 10,240 / 3,328 |
+| Stale agent samples after takeover | 0 in both browsers |
+| Dropped frames | 0 in both browser snapshots |
+| Playback underruns | Caller 2; nurse 0 |
+
+The command was `NURSEBRIDGE_BASE_URL=http://localhost:8987 NURSEBRIDGE_LIVE_E2E=1 PLAYWRIGHT_CHANNEL=chrome pnpm exec playwright test tests/browser/live.spec.ts --workers=1 --reporter=list`. Call assertions completed in 34 seconds. The runner reported **1 passed** after 2.7 minutes: Chrome's background update helpers inherited the test's stderr and delayed shutdown until those identified helper processes were stopped. An earlier attempt passed the call assertions but timed out during browser teardown. The test now owns its browsers directly, stops capture before closing them, and deletes its case during cleanup; automatic Chrome helper shutdown remains an environment limitation.
+
+Both attempts' cases were deleted through the authenticated admin API and subsequently returned HTTP 410. Read-only inspection of their local Durable Object stores confirmed closed/deleted state, no pending provider deletions and no unresolved provider connections. The provider adapter removes deletion work only after the provider returns HTTP 204 or 404. This verifies logical deletion acceptance, not physical erasure or backup expiry. The isolated runtime was stopped and its temporary credential copy removed. The user's local app remains available separately in transcript-replay mode.
+
+The [redacted verification evidence](evidence/live-voice-verification-2026-09-29.json) preserves timings, playback counters and cleanup results without call identifiers, provider session identifiers or credentials. These are local observations, not latency guarantees. The nurse playback snapshot had zero RMS, so this run proves human-channel PCM transport but does not establish sustained audible caller speech after takeover. Physical audibility, intelligibility, echo, PSTN delivery and production account controls remain unverified.
+
+## Production foundation verified on 2026-09-29
+
+This revision replaces event-oriented project presentation with product documentation, a workspace guide, release checks and operator runbooks. It remains pre-production; the [release requirements](production-readiness.md) are explicit.
+
+| Executed check | Result |
+| --- | --- |
+| `pnpm typecheck` / `pnpm lint` | Pass |
+| `pnpm test` | 132 tests pass, including 46 staff authentication regressions |
+| `pnpm test:workers` | 151 tests pass |
+| `pnpm test:tooling` | 19 tests pass: deployment guards and mocked provider setup |
+| `pnpm build` | Audio worklets and Next.js/OpenNext bundle pass |
+| `pnpm bindings` | Both Worker binding types regenerated |
+| `NURSEBRIDGE_QA_WEB_PORT=8987 NURSEBRIDGE_QA_REALTIME_PORT=8988 PLAYWRIGHT_CHANNEL=chrome pnpm test:e2e` | 14 pass; 1 live-provider test skipped; isolated runtime exits successfully |
+| Production preflight on the supplied templates | Rejects unresolved resource and Access placeholders, as intended |
+| `git diff --check` | Pass |
+
+Authentication tests verify actual RSA signatures against synthetic JWKS and use an in-memory SQLite database for real session/invitation queries. Coverage includes expired/wrong-issuer/wrong-audience/malformed tokens, missing claims, disabled and non-loopback enrollment, caller invitations without staff identity, rejected staff redemption without consuming the token, and concurrent single-use redemption. This does not verify a deployed Access policy or establish identity-bound organization membership.
+
+Deployment tests reject insecure origins, mismatched or shared resources, test controls, credentials in variables and unsupported limits. Build/dry-run failures, signals and spawn failures stop later steps before remote mutations. No deployment was performed. The new GitHub Actions workflow is configured; its remote execution and branch protection remain unverified.
+
+Browser acceptance used the rebuilt mock Workers runtime with synthetic credentials on ports 8987/8988. It covered the workspace redirect, enrollment and staff navigation at desktop 1440×1050 and mobile 390×844, closed-enrollment guidance, existing intake/recovery/privacy flows, and signed phone protocol audio. No unexpected page or console errors occurred in the workspace flow; the initial unauthenticated session HTTP 401 is expected. Real provider calls, PSTN, physical devices and production account controls were not tested in this run.
+
 ## Inbound phone implementation verified on 2026-09-24
 
 Twilio inbound integration now connects a telephone media stream to the existing case, nurse queue and browser audio path. All verification in this section uses fictional local fixtures. No Twilio number was provisioned, no PSTN call was placed, no live AI was enabled, and nothing was deployed. [Operator setup](phone-inbound.md) documents the remaining number, credentials, HTTPS and real-call acceptance steps.

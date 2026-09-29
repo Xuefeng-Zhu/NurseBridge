@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { CommandBodySchema, FieldSchema, RECORDING_DISCLOSURE_VERSION, type Session, type IntakeTemplate } from '@nursebridge/contracts';
+import { CommandBodySchema, FieldSchema, DISCLOSURE, RECORDING_DISCLOSURE_VERSION, type Session, type IntakeTemplate } from '@nursebridge/contracts';
 import { DEFAULT_TEMPLATE } from '@nursebridge/intake-policy';
 import { RETENTION_MS, SESSION_MS, CALL_DURATION_MS } from '@nursebridge/database';
 import { env, callObject, type AppEnv } from './env';
-import { session, origin, hash, token, sessionCookie, rateLimit } from './auth';
+import { session, origin, hash, token, sessionCookie, rateLimit, enrollmentMode, requireStaffAccess } from './auth';
 import { body, json, HttpError, unwrap } from './http';
 const uuid = z.string().uuid();
 const staff = ['admin', 'nurse'] as const;
@@ -20,6 +20,8 @@ export async function createSession(request: Request) {
     const bindings = env();
     origin(request, bindings);
     const data = await body(request);
+    if (!data.invitation && enrollmentMode(request, bindings) !== 'sandbox')
+        throw new HttpError(403, 'Workspace creation is available only in an enabled local sandbox');
     const now = Date.now();
     await rateLimit(bindings, 'session:' + await hash(request.headers.get('cf-connecting-ip') ?? 'local'), 30, 3600000);
     if (bindings.TURNSTILE_SECRET_KEY) {
@@ -29,7 +31,7 @@ export async function createSession(request: Request) {
             hostname?: string;
         };
         if (!checked.success || checked.hostname !== new URL(bindings.APP_ORIGIN).hostname)
-            throw new HttpError(403, 'Demo verification failed');
+            throw new HttpError(403, 'Verification failed');
     }
     const participantId = crypto.randomUUID();
     let workspaceId = crypto.randomUUID();
@@ -38,12 +40,18 @@ export async function createSession(request: Request) {
     const tokenHash = await hash(raw);
     if (data.invitation) {
         const invitationHash = await hash(z.string().min(32).max(128).parse(data.invitation));
-        const invite = await bindings.DB.prepare('UPDATE invitations SET redeemed_by=? WHERE token_hash=? AND redeemed_by IS NULL AND expires_at>? AND EXISTS(SELECT 1 FROM workspaces WHERE id=invitations.workspace_id AND expires_at>?) RETURNING workspace_id,role').bind(participantId, invitationHash, now, now).first<{
+        const invite = await bindings.DB.prepare('SELECT workspace_id,role FROM invitations WHERE token_hash=? AND redeemed_by IS NULL AND expires_at>? AND EXISTS(SELECT 1 FROM workspaces WHERE id=invitations.workspace_id AND expires_at>?)').bind(invitationHash, now, now).first<{
             workspace_id: string;
             role: 'nurse' | 'caller';
         }>();
-        if (!invite)
+        if (!invite || !['nurse', 'caller'].includes(invite.role))
             throw new HttpError(410, 'Invitation expired or already used');
+        // Authenticate staff before consuming the single-use invitation. The conditional
+        // update still arbitrates concurrent redemptions after identity verification.
+        if (invite.role === 'nurse') await requireStaffAccess(request, bindings);
+        const redeemedAt = Date.now();
+        const redeemed = await bindings.DB.prepare('UPDATE invitations SET redeemed_by=? WHERE token_hash=? AND workspace_id=? AND role=? AND redeemed_by IS NULL AND expires_at>? AND EXISTS(SELECT 1 FROM workspaces WHERE id=invitations.workspace_id AND expires_at>?) RETURNING workspace_id,role').bind(participantId, invitationHash, invite.workspace_id, invite.role, redeemedAt, redeemedAt).first();
+        if (!redeemed) throw new HttpError(410, 'Invitation expired or already used');
         workspaceId = invite.workspace_id;
         role = invite.role;
     }
@@ -70,7 +78,7 @@ export async function createCall(request: Request) {
         call_id: string;
     }>();
     if (!row)
-        throw new HttpError(429, 'This demo workspace already has two active calls');
+        throw new HttpError(429, 'This workspace has reached its active call limit');
     const result = unwrap(await callObject(bindings, row.call_id).initialize({ callId: row.call_id, workspaceId: user.workspaceId, callerParticipantId: user.participantId, template: await template(bindings, user.workspaceId), mode: bindings.PROVIDER_MODE }));
     if (!result.ok)
         throw new HttpError(503, 'Call initialization pending');
@@ -87,11 +95,11 @@ async function reserveAudio(bindings: AppEnv, user: Session, id: string) {
         return;
     const inserted = await bindings.DB.prepare('INSERT OR IGNORE INTO audio_reservations(call_id,workspace_id,day,minutes,expires_at) SELECT ?,?,?,10,? WHERE (SELECT COUNT(*) FROM audio_reservations WHERE expires_at>? AND released=0)<? AND (SELECT COALESCE(SUM(minutes),0) FROM audio_reservations WHERE day=?)<=? RETURNING call_id').bind(id, user.workspaceId, day, now + CALL_DURATION_MS, now, quota(bindings.MAX_LIVE_CONCURRENCY, 4), day, quota(bindings.DAILY_AUDIO_MINUTES, 120) - 10).first();
     if (!inserted)
-        throw new HttpError(429, 'Live demonstration audio quota reached. Human access remains available');
+        throw new HttpError(429, 'Live audio quota reached. Human access remains available');
 }
 export async function command(request: Request, id: string, type: string) { const { bindings, user, data } = await mutation(request); const parsed = CommandBodySchema.parse(data); const call = await authoritative(bindings, user, id); if (['claim', 'takeover', 'review', 'intake', 'acknowledge-escalation'].includes(type) && !staff.includes(user.role as 'admin' | 'nurse'))
     throw new HttpError(403, 'Nurse membership required'); if (type === 'delete' && user.role !== 'admin')
-    throw new HttpError(403, 'Demo administrator required'); if (['consent', 'mock-turn'].includes(type) && call.callerParticipantId !== user.participantId)
+    throw new HttpError(403, 'Workspace administrator required'); if (['consent', 'mock-turn'].includes(type) && call.callerParticipantId !== user.participantId)
     throw new HttpError(403, 'Caller membership required'); if (type === 'consent') {
     z.boolean().parse(data.accepted);
     if (data.accepted && bindings.PROVIDER_MODE === 'live') {
@@ -115,7 +123,7 @@ export async function settings(request: Request) { const bindings = env(), user 
         providers = value.providers;
     if (value.phoneInbound) phoneInbound = value.phoneInbound;
 }
-catch { /* Unavailable remains explicitly unverified. */ } return json({ escalationDestination: 'Demo nurse queue', ...JSON.parse(row?.settings_json ?? '{}'), retentionDays: 7, recording, phoneInbound, template: await template(bindings, user.workspaceId), mode: bindings.PROVIDER_MODE, providers }); }
+catch { /* Unavailable remains explicitly unverified. */ } return json({ escalationDestination: 'Nurse queue', ...JSON.parse(row?.settings_json ?? '{}'), retentionDays: 7, recording, phoneInbound, template: await template(bindings, user.workspaceId), mode: bindings.PROVIDER_MODE, providers }); }
 const TemplateSchema = z.object({ id: z.string().min(1).max(64), name: z.string().min(1).max(120), opening: z.string().min(1).max(1000), acknowledgments: z.array(z.string().min(1).max(500)).min(1).max(8), questions: z.array(z.object({ id: FieldSchema, field: FieldSchema, text: z.string().min(1).max(500) })).min(1).max(8) });
 export async function updateSettings(request: Request) { const { bindings, user, data } = await mutation(request, ['admin']); const destination = data.escalationDestination === undefined ? undefined : z.string().min(1).max(120).parse(data.escalationDestination); if (data.recording !== undefined || data.retentionDays !== undefined && data.retentionDays !== 7)
     throw new HttpError(400, 'Provider recording is controlled by deployment configuration; application retention stays at seven days'); const statements = destination === undefined ? [] : [bindings.DB.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').bind(JSON.stringify({ escalationDestination: destination }), user.workspaceId)]; if (data.template) {
@@ -134,7 +142,7 @@ export async function exportCase(request: Request, id: string) {
     const expiresAt = call.expiresAt;
     unwrap(await callObject(bindings, id).reserveExport({ workspaceId: user.workspaceId, exportId, key, expiresAt }));
     await bindings.DB.prepare('INSERT INTO exports(id,call_id,workspace_id,object_key,status,expires_at) VALUES(?,?,?,?,?,?)').bind(exportId, id, user.workspaceId, key, 'pending', expiresAt).run();
-    const content = format === 'json' ? JSON.stringify(call, null, 2) : ['# NurseBridge synthetic case', 'Simulation only — use fictional patient information. Not for medical care.', ...call.facts.map(f => `\n## ${f.field}\n${f.value}\nStatus: ${f.status}\n${f.evidence.map(e => `Source ${e.turnId}: ${e.quote}`).join('\n')}`)].join('\n');
+    const content = format === 'json' ? JSON.stringify(call, null, 2) : ['# NurseBridge case', DISCLOSURE, ...call.facts.map(f => `\n## ${f.field}\n${f.value}\nStatus: ${f.status}\n${f.evidence.map(e => `Source ${e.turnId}: ${e.quote}`).join('\n')}`)].join('\n');
     await bindings.EXPORTS.put(key, content, { httpMetadata: { contentType: format === 'json' ? 'application/json' : 'text/markdown' } });
     const finalized = await callObject(bindings, id).finalizeExport({ workspaceId: user.workspaceId, exportId, key });
     if (!finalized.ok) {
@@ -148,4 +156,4 @@ export async function downloadExport(request: Request, id: string, exportId: str
     object_key: string;
 }>(); if (!row)
     throw new HttpError(404, 'Export not found'); const object = await bindings.EXPORTS.get(row.object_key); if (!object)
-    throw new HttpError(404, 'Export expired'); return new Response(object.body, { headers: { 'Cache-Control': 'private, no-store', 'Content-Type': object.httpMetadata?.contentType ?? 'application/json', 'Content-Disposition': 'attachment; filename="synthetic-case.' + (row.object_key.endsWith('.md') ? 'md' : 'json') + '"', 'X-Content-Type-Options': 'nosniff' } }); }
+    throw new HttpError(404, 'Export expired'); return new Response(object.body, { headers: { 'Cache-Control': 'private, no-store', 'Content-Type': object.httpMetadata?.contentType ?? 'application/json', 'Content-Disposition': 'attachment; filename="case.' + (row.object_key.endsWith('.md') ? 'md' : 'json') + '"', 'X-Content-Type-Options': 'nosniff' } }); }

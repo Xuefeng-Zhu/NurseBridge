@@ -215,7 +215,7 @@ export class CallSession extends DurableObject<Env>{
    const prior=this.store.storage.sql.exec<{participant_id:string;request_hash:string;body:string}>('SELECT participant_id,request_hash,body FROM commands WHERE id=?',command.commandId).toArray()[0];
    if(prior){if(prior.participant_id!==command.participantId||prior.request_hash!==requestHash)fail(409,'command_mismatch','Command ID was already used for a different request.');return JSON.parse(prior.body) as RpcResult;}
    const fixtureText=command.payload?.text;
-   if(command.type==='mock-turn'&&(typeof fixtureText!=='string'||fixtureText.length>6000))fail(400,'invalid_fixture','A bounded fictional transcript is required.');
+   if(command.type==='mock-turn'&&(typeof fixtureText!=='string'||fixtureText.length>6000))fail(400,'invalid_fixture','A replay transcript within the size limit is required.');
    if(command.type==='consent'&&command.payload?.accepted===true&&this.state!.mode==='live'&&liveActivationIssues(this.phone?{...this.env,FICTIONAL_LIVE_TEST:undefined}:this.env).length)fail(503,'live_activation_blocked','Voice Agent requires verified Nemotron compatibility and provider recording controls. Request a nurse instead.');
    const next=structuredClone(this.state!);
    this.ctx.storage.transactionSync(()=>{
@@ -647,7 +647,7 @@ export class CallSession extends DurableObject<Env>{
     // Deterministic audible fixture. This is visibly a cue tone, never claimed as speech.
     const samples=48000;const bytes=new Uint8Array(samples*2);const view=new DataView(bytes.buffer);
     for(let i=0;i<samples;i++)view.setInt16(i*2,Math.round(Math.sin(i*2*Math.PI*220/24000)*1800),true);
-    speech={kind:'pcm' as const,bytes,sampleRate:24000};this.broadcast({type:'fixture-audio',message:'Mock mode: synthetic cue tone; approved wording is shown as text.'});
+    speech={kind:'pcm' as const,bytes,sampleRate:24000};this.broadcast({type:'fixture-audio',message:'Replay audio: test cue tone; approved wording is shown as text.'});
    }else{return;}
    if(!this.current(epoch,generation)||responseId!==this.generationJob)return;
    this.mutate(s=>{s.aiStatus='speaking';s.timings={...s.timings,firstAudioReadyMs:Date.now()-startedAt};},'speech-started','Approved wording audio ready.');this.broadcast({type:'agent-status',status:'speaking'});
@@ -719,7 +719,7 @@ export class CallSession extends DurableObject<Env>{
   this.ctx.storage.transactionSync(()=>{
    this.store.clearContent();
    this.state!.turns=[];this.state!.assistantTurns=[];this.state!.facts=[];this.state!.factRevisions=[];this.state!.timeline=[];this.state!.escalations=[];this.state!.warnings=[];this.state!.deleted=true;this.state!.providerSession={status:'ended'};this.state!.provider.sessionId=null;
-   this.store.commit(this.state!,'deleted','Synthetic case deleted.');
+   this.store.commit(this.state!,'deleted','Case deleted.');
   });
   this.scrubDeletedPhone();
   for(const row of keys){try{await this.env.EXPORTS?.delete(row.object_key);this.store.storage.sql.exec('DELETE FROM export_reservations WHERE object_key=?',row.object_key);}catch{/* Alarm retries object deletion. */}}
@@ -738,13 +738,13 @@ export class CallSession extends DurableObject<Env>{
  async alarm(){
   const state=this.state;if(!state)return;const now=Date.now();
   await this.retryPhoneTermination();
-  if(!state.deleted&&now>=state.expiresAt){this.mutate(s=>{s.deleted=true;s.queueState='CLOSED';s.conversationOwner='NONE';s.controlEpoch++;s.responseGeneration++;},'retention-expired','Synthetic case retention expired.');await this.eraseContent();return;}
+  if(!state.deleted&&now>=state.expiresAt){this.mutate(s=>{s.deleted=true;s.queueState='CLOSED';s.conversationOwner='NONE';s.controlEpoch++;s.responseGeneration++;},'retention-expired','Case retention expired.');await this.eraseContent();return;}
   if(state.deleted){await this.cleanupProviderSessions();for(const row of this.store.storage.sql.exec<{object_key:string}>('SELECT object_key FROM export_reservations').toArray()){try{await this.env.EXPORTS?.delete(row.object_key);this.store.storage.sql.exec('DELETE FROM export_reservations WHERE object_key=?',row.object_key);}catch{}}await this.flushProjection();await this.scheduleAlarm();return;}
-  if(this.state&&this.state.queueState!=='CLOSED'&&now>=this.state.callDeadlineAt){this.mutate(s=>{s.queueState='CLOSED';s.conversationOwner='NONE';s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;delete s.handoff;s.warnings.push('Ten-minute synthetic call limit reached. The call is closed operationally; this is not a clinical disposition.');},'duration-limit','Bounded synthetic call duration reached.');this.abortAi('duration-limit',false);this.stopProvider();this.requestPhoneTermination();this.publish();for(const socket of this.ctx.getWebSockets())socket.close(1000,'Simulation duration limit reached');}
+  if(this.state&&this.state.queueState!=='CLOSED'&&now>=this.state.callDeadlineAt){this.mutate(s=>{s.queueState='CLOSED';s.conversationOwner='NONE';s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;delete s.handoff;s.warnings.push('Call duration limit reached. The call is closed operationally; this is not a clinical disposition.');},'duration-limit','Call duration limit reached.');this.abortAi('duration-limit',false);this.stopProvider();this.requestPhoneTermination();this.publish();for(const socket of this.ctx.getWebSockets())socket.close(1000,'Call duration limit reached');}
   for(const socket of this.ctx.getWebSockets()){const a=socket.deserializeAttachment() as Attachment|null;if(a&&(a.expiresAt<now||a.authenticated&&now-a.lastHeartbeat>30000)){this.disconnected(socket);socket.close(1008,'Heartbeat or session expired');}}
   if(this.state?.handoff&&this.state.handoff.deadline<now){this.mutate(s=>{delete s.handoff;s.conversationOwner='NONE';s.aiStatus='stopped';s.humanRequested=true;s.controlEpoch++;s.responseGeneration++;},'handoff-timeout','Human audio checks timed out. Caller session preserved; retry available.');this.abortAi('handoff-timeout',false);this.stopProvider();this.publish();}
   if(this.state?.claim&&this.state.claim.expiresAt<now&&this.state.queueState==='CLAIMED'){this.mutate(s=>{delete s.claim;s.queueState='WAITING';s.participants.nurse=false;s.mediaReady.nurse=false;},'claim-expired','Nurse claim expired; queue arrival time preserved.');this.publish();}
-  if(this.state?.aiStartedAt&&now-this.state.aiStartedAt>Number(this.env.MAX_CALL_SECONDS??600)*1000&&this.state?.conversationOwner==='AI'){this.abortAi('duration-limit');this.stopProvider();this.mutate(s=>{s.conversationOwner='NONE';s.aiStatus='stopped';s.humanRequested=true;s.intakeState='INTERRUPTED';s.warnings.push('Synthetic AI audio duration limit reached. Human access remains available.');},'duration-limit','Bounded AI intake duration reached.');this.publish();}
+  if(this.state?.aiStartedAt&&now-this.state.aiStartedAt>Number(this.env.MAX_CALL_SECONDS??600)*1000&&this.state?.conversationOwner==='AI'){this.abortAi('duration-limit');this.stopProvider();this.mutate(s=>{s.conversationOwner='NONE';s.aiStatus='stopped';s.humanRequested=true;s.intakeState='INTERRUPTED';s.warnings.push('AI audio duration limit reached. Human access remains available.');},'duration-limit','Bounded AI intake duration reached.');this.publish();}
   if(this.reconnectAt&&now>=this.reconnectAt){this.reconnectAt=0;await this.startIntake();}
   this.store.storage.sql.exec('DELETE FROM tickets WHERE expires_at<?',now);
   if(!this.projectionRetryAt||now>=this.projectionRetryAt)await this.flushProjection();

@@ -1,42 +1,98 @@
 # Deployment
 
-Provisioning and public deployment are intentionally outside the completed repository task. These are operator instructions, not evidence of an existing cloud installation.
+NurseBridge runs as two Cloudflare Workers with a shared D1 database and private R2 bucket per environment. The web Worker serves the application through OpenNext; the realtime Worker owns the SQLite-backed `CallSession` Durable Objects and provider connections. Web accesses realtime through a service binding and the exported Durable Object class.
 
-## Bindings and local runtime
+Deployment tooling validates configuration and release artifacts. It does not establish service availability, provider privacy controls, or authorization to process patient information. Complete the [production readiness requirements](production-readiness.md) before processing patient information.
 
-Both Workers use `DB` for the same environment's D1 database and `EXPORTS` for the same private R2 bucket. Realtime owns `CALL_SESSIONS` and its SQLite class migration; web binds the exported CallSession class using `script_name`. Extraction uses Nebius Token Factory over server-side HTTPS. Web reads bindings using `getCloudflareContext` and uses Next's default runtime with OpenNext, not forced Edge runtime.
+## Environments
 
-Local ports: web Workers preview 8787, realtime 8788, optional Next dev 3000. The preview runner uses one Wrangler multi-Worker runtime with a local-only gateway and a loopback proxy for realtime. D1/R2 share one emulator authority; do not run the two standalone Wrangler dev processes concurrently against the same SQLite directory. Application deployments remain two independent Workers. Persist the runtime and D1 migrations to repository `.local/state`; stop the preview before running database CLI mutations. Exact Origin allowlists must match the browser URL. Localhost is a browser secure-context exception for microphone use; device testing requires HTTPS.
+| Environment | Purpose | Data and access |
+| --- | --- | --- |
+| Local | Development and deterministic tests | Providers disabled, loopback-only workspace enrollment, isolated emulator storage |
+| Staging | Hosted integration and acceptance | Separate D1/R2 resources, authenticated staff, diagnostics disabled |
+| Production | Controlled releases after acceptance | Separate resources and secrets, managed staff access, documented operating ownership |
 
-## Staging order
+The checked-in hosted configurations contain placeholders. They are templates, not provisioned environments. Configure both `apps/web/wrangler.jsonc` and `apps/realtime/wrangler.jsonc` for the selected environment. Bindings and variables must be repeated explicitly; do not assume local bindings carry into a named environment.
 
-1. Authenticate Wrangler in your own Cloudflare account. Create staging D1 with `wrangler d1 create nursebridge-staging` and private R2 with `wrangler r2 bucket create nursebridge-exports-staging`.
-2. Replace staging IDs, web/realtime hostnames, and exact Origins in both Wrangler configurations. Bindings are explicitly repeated per environment. Never point staging at a production database or bucket.
-3. Apply D1 migrations: `pnpm --filter @nursebridge/web exec wrangler d1 migrations apply DB --remote --env staging`.
-4. Install both provider secrets only on realtime: `pnpm --filter @nursebridge/realtime exec wrangler secret put ASSEMBLYAI_API_KEY --env staging` and `pnpm --filter @nursebridge/realtime exec wrangler secret put NEBIUS_API_KEY --env staging`. Configure the versioned AssemblyAI Voice Agent using the explicit setup script described in voice-agent.md. No provider key belongs in browser code, Wrangler vars, or a URL.
-5. Set optional Turnstile secret/site key on web and staff Access configuration if used. Configure R2 lifecycle expiry at seven days as defense against orphaned exports; application expiry also follows parent-case retention.
-6. Deploy realtime first, then build and deploy web via OpenNext. `pnpm deploy --staging` rejects unresolved placeholders and performs migrations, realtime deploy, build, and web deploy.
-7. Perform the live acceptance checklist before sharing a public demo. Disable test diagnostics for staging. Verify Voice Agent PCM24k configuration, Nemotron streaming/tools and independent schema extraction, and provider recording retention/deletion; configuration is not proof of provider availability.
+## Local development
 
-Copy `.dev.vars.example` to `.dev.vars` only for local secrets. Git ignores actual `.dev.vars`; do not print or commit its contents. A new worktree must receive matching untracked environment files before live verification.
+Use the Node and pnpm versions declared in the root `package.json`:
 
-The default local configuration uses explicit mock mode and requires no paid provider access. Set both Workers to the same mode. `VOICE_AGENT_ID` and `VOICE_AGENT_VERSION` identify the stored configuration; `VOICE_AGENT_COMPATIBILITY_VERIFIED` reports a completed manual compatibility check but cannot bypass unverified recording controls. Normal live consent and provider startup both fail closed while that gate remains. For a fictional local compatibility test, realtime `FICTIONAL_LIVE_TEST=true` bypasses only recording-control and compatibility activation checks when every allowed Origin is an exact HTTP loopback origin; see voice-agent.md. It does not mark those checks verified and is ineffective with the staging Origin. Credentials are never presence-based evidence of working inference.
+```sh
+pnpm install --frozen-lockfile
+pnpm db:migrate
+pnpm db:seed
+pnpm dev
+```
 
-`EXTRACTION_MODEL` remains `nvidia/Nemotron-3_5-Lightning` at the fixed Nebius Token Factory endpoint. Conversation uses the same model through AssemblyAI's stored-agent BYO LLM integration. There is no fallback to another model or to mock results. The old Cloudflare `AI`, `TTS_MODEL`, and `TTS_SPEAKER` bindings have been removed. Run `pnpm setup:voice-agent` for a secret-free dry run; see voice-agent.md before any explicit remote setup.
+The runner builds the application and starts one multi-Worker runtime: web at `http://localhost:8787`, realtime at `ws://localhost:8788`. It shares a single emulator authority for D1/R2/DO storage in `.local/state`. Stop the runner before database CLI mutations. Running separate Wrangler processes against that directory can cause database errors.
 
-Web quota variables are `MAX_ACTIVE_CALLS_PER_WORKSPACE=2`, `MAX_LIVE_CONCURRENCY=4`, and `DAILY_AUDIO_MINUTES=120`. Live calls reserve ten minutes conservatively; unused reserved daily minutes are not refunded, while concurrency is released when AI stops. Intake cannot restart after it enters waiting; a new fictional call is required. Realtime's `MAX_CALL_SECONDS=600` bounds the total synthetic call independently of seven-day case retention.
+Local workspace enrollment requires `ALLOW_LOCAL_SANDBOX_ENROLLMENT=true`, no Access issuer/audience configuration, a canonical HTTP loopback `APP_ORIGIN`, and an actual request from that same origin. The flag cannot enable enrollment on a hosted URL.
 
-## Staff Access option
+Copy the appropriate `.dev.vars.example` to `.dev.vars` only when provider testing needs local secrets. Actual environment files are ignored by Git. Copy matching untracked environment files into a new worktree before credential-dependent verification; never print their values. The default local workflow needs no paid provider credentials. Device microphone tests require HTTPS.
 
-Optional Twilio inbound calls require migration `0002_phone_inbound.sql`, realtime account credentials, an exact public origin, and an operator-owned number-to-workspace map. Follow [inbound phone setup](phone-inbound.md) for Voice and status callback URLs, limits and acceptance. Phone-to-nurse service can run while AI is gated. Keep webhook and media endpoints reachable by Twilio; they verify provider signatures and one-use media tokens independently of browser staff authentication. No number is provisioned or configured by deployment alone.
+## Prepare a hosted environment
 
-Use a hostname-based Cloudflare Access application for staff/admin traffic, with a restrictive identity policy. Configure an HTTPS `ACCESS_ISSUER` and exact `ACCESS_AUDIENCE`. Validate JWT signature against issuer JWKS, issuer, audience and expiry, then require workspace membership. A header's presence alone grants nothing. Do not put worker-level Access policies on the realtime upgrade endpoint; current Cloudflare documentation notes incompatibility with WebSocket upgrades. Caller access still uses scoped invitations and tickets.
+1. Provision a D1 database and private R2 bucket for the environment in the intended Cloudflare account. For staging, the names in the templates are `nursebridge-staging` and `nursebridge-exports-staging`; use separate resources for production.
+2. Replace the selected environment's resource IDs and hostnames. Both Workers must reference the same environment's D1/R2 resources. Web's `REALTIME` service and `CALL_SESSIONS.script_name` must identify that environment's realtime Worker.
+3. Set `APP_ORIGIN` to the exact HTTPS web origin and `REALTIME_URL` to the exact WSS realtime origin. Set realtime `ALLOWED_ORIGINS` to exactly the web origin. Set `PROVIDER_MODE=live` on both Workers; hosted replay responses are rejected by preflight. Set `ALLOW_TEST_DIAGNOSTICS=false` and `FICTIONAL_LIVE_TEST=false` on both, and `ALLOW_LOCAL_SANDBOX_ENROLLMENT=false` on web. Match positive shared quota values between Workers.
+4. Configure staff Access authentication as described below. A hosted deployment cannot create administrator workspaces through public enrollment. Managed organization provisioning and staff identity lifecycle remain release requirements; do not bypass them with test cookies or direct production database inserts.
+5. Configure R2 lifecycle expiration at seven days as protection against orphaned exports. Confirm bucket public access is disabled. Application export deletion follows the parent case and retries failed object deletions.
+6. Install any needed provider secrets only in their designated Worker and environment. Provider credentials belong in secret bindings, never Wrangler `vars`, browser code, URLs, logs, or committed environment files.
 
-## Rollback and operational limits
+For example, after choosing and configuring staging:
 
-Worker rollback does not roll back D1, Durable Object storage or R2. Keep schema migrations additive and backward compatible; destructive DO class changes can block rollback. Use forward repair for incompatible data changes.
+```sh
+pnpm --filter @nursebridge/realtime exec wrangler secret put ASSEMBLYAI_API_KEY --env staging
+pnpm --filter @nursebridge/realtime exec wrangler secret put NEBIUS_API_KEY --env staging
+```
 
-The ten-minute demo bound avoids reliance on indefinitely active objects. Outbound provider sockets incur duration charges. Inspect only content-free operational status and timing data. Projection errors are surfaced in the nurse workspace; they must not sever human audio. No `setInterval`, `next/after`, filesystem write or always-running Node daemon is used for durable production work.
+Provider credentials are needed only for the applicable integration. They do not enable public automated intake by themselves. [Voice Agent setup](voice-agent.md) describes the stored, versioned agent and separate provider setup action. Conversation and extraction use `nvidia/Nemotron-3_5-Lightning`; there is no silent model substitution or replay fallback.
 
+## Validate and release
 
-Before changing an existing environment from the old provider pipeline, let active calls finish or expire. Upgrade code alone never turns legacy consent into recording consent. Call deadlines are authoritative and provider work stops during waiting. Keep rollout in mock mode until the live gates pass. No public deployment is performed by implementation tests.
+Run the configuration check before making a remote change:
+
+```sh
+pnpm deploy:check --env staging
+```
+
+It checks the selected local configuration: resource isolation, bindings, origins, staff authentication requirements, disabled development controls, quotas, and optional phone settings. It does not contact Cloudflare or verify secrets, DNS, Access policy, Twilio delivery, or provider behavior.
+
+Current release limits are fixed at `MAX_CALL_SECONDS=600` and `RETENTION_SECONDS=604800`, matching the shared call-reservation and seven-day content policy. Preflight rejects other values because changing a single Worker variable cannot safely change those policies. Shared quota defaults are two active calls per workspace, four concurrent live-AI sessions, and 120 reserved AI minutes per day; phone defaults are two concurrent calls and 60 reserved minutes per day. Daily reservations are conservative and unused minutes are not refunded.
+
+After the release checklist and environment acceptance are complete:
+
+```sh
+pnpm deploy --env staging
+```
+
+The release command validates configuration, builds locally, dry-runs both Worker bundles, applies the selected environment's D1 migrations, deploys realtime, then deploys web. Use `--env production` for the independently configured production environment. `--staging` and `--production` are supported aliases. A deploy failure after migrations or the first Worker deploy may leave a partial release; inspect both deployed versions before retrying.
+
+Run the [post-release checks](operations.md#release-and-post-release-checks) with test data. Keep evidence for the deployed revision and environment. A passing local test suite or successful upload is not acceptance of the deployed service.
+
+## Staff access
+
+Hosted staff requests require a signed Cloudflare Access JWT with the configured HTTPS `ACCESS_ISSUER` and exact `ACCESS_AUDIENCE`, in addition to an authorized workspace session. Configure a restrictive Access identity policy for the staff surface. Merely sending an Access header does not grant access. Staff invitation redemption authenticates before consuming the invitation.
+
+Caller invitations and scoped realtime tickets are independent of staff Access. Keep caller-facing routes and authenticated Twilio webhook/media routes reachable without a staff login challenge. Do not place a blanket browser authentication challenge over the realtime service. Validate the actual routing policy in staging, including direct Worker URLs and any alternate hostnames.
+
+Access is currently an application-wide gate: its JWT subject is not bound to the workspace participant. Existing sessions last four hours and workspaces expire after seven days. Managed provisioning, identity-bound membership, renewal, revocation, and durable organizations remain required before operating a long-lived service.
+
+## Optional phone service
+
+Twilio inbound service requires the phone database migration, an owned Voice-capable number, realtime account credentials, the exact public realtime origin, and an operator-controlled number-to-workspace map. Follow [inbound phone setup](phone-inbound.md) for callbacks, carrier limits, and acceptance. Do not bind the test-only `TWILIO_HTTP` stub in a deployed environment.
+
+Phone-to-nurse service can work while automated intake is gated. Enabling a number incurs carrier usage even if AI is disabled. Drain carrier calls and confirm termination before disabling phone ingress, changing routes, or rotating account credentials: disabling ingress also rejects status callbacks needed by outstanding calls.
+
+## Live AI activation
+
+Public automated intake remains blocked by the code-level provider recording-control gate. Consent and provider startup both enforce it. A compatibility flag, stored agent ID, API key, or successful deployment cannot override that decision. Resolve the documented provider controls through a reviewed implementation and independent acceptance evidence before enabling this service.
+
+`FICTIONAL_LIVE_TEST` is a development-only exception with exact HTTP loopback Origins. It is prohibited in hosted release configuration. It does not mark recording controls or compatibility verified. See [safety and privacy](safety-and-privacy.md) for the data boundaries.
+
+## Rollback
+
+Record the previous versions of both Workers and the migration state before every release. Drain calls before an incompatible update; do not assume active provider or carrier sockets survive a release. Keep database and Durable Object migrations additive and compatible with the rollback target.
+
+Worker rollback does not restore D1, Durable Object storage, or R2. Reverting code after an incompatible schema change can worsen an incident; use a reviewed forward repair when rollback cannot safely read the new state. Restoration and deletion reconciliation require separate staging drills, described in [operations](operations.md).
