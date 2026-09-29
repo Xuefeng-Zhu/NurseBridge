@@ -1,5 +1,24 @@
 # Test results
 
+## Polished voice path verified with live providers on 2026-09-29
+
+The final audio implementation, plus the reviewed rehearsal text corrections, passed the opt-in fictional live test on source `743cce2ef548ebd5fcfaca1075a4f78803ddc72b`. The existing local configuration already selected live mode and the exact-loopback fictional-test exception. No hosted activation or provider recording-control flags were changed.
+
+`NURSEBRIDGE_BASE_URL=http://localhost:8787 NURSEBRIDGE_LIVE_E2E=1 pnpm exec playwright test tests/browser/live.spec.ts --workers=1 --reporter=list` passed in **30.8 seconds** against the rebuilt app using Playwright's Chromium headless shell. The browser and runner exited automatically. A final rehearsal audit also corrected the loopback-only instructions and replaced an inaccurate scenario-dependent replay caption with “Editable fictional transcript”; focused lint and the rebuilt app passed.
+
+| Live check | Observed result |
+| --- | --- |
+| Final caller speech / evidence | 1 finalized turn; 1 fact linked to its supporting transcript |
+| Agent response | 3 assistant turns, including a reply after the caller's finalized turn |
+| First agent audio ready / playback | 931 ms / 963 ms |
+| Final transcript / evidence extraction | 1,299 ms / 1,310 ms |
+| Nurse takeover | 156 ms; both receiving worklets rendered non-silent human audio |
+| Stale agent samples / dropped frames | 0 in both recorded receiving proofs |
+| Playback underruns | Caller 3; nurse 0 |
+| Cleanup | Delete accepted; case no longer readable; durable state CLOSED/deleted with no pending provider deletions or unresolved provider connections |
+
+The [redacted final-build evidence](evidence/polished-live-voice-2026-09-29.json) excludes call and provider-session identifiers. Cleanup was independently checked in the test case's local Durable Object store after the test assertions passed. This proves accepted logical API deletion, not physical erasure or backup expiry. These are single-call observations with recorded microphone inputs; physical-device audibility, echo, PSTN delivery, hosted operation and production recording controls remain unverified.
+
 ## Demo and recovery polish verified on 2026-09-29
 
 The review branch based on `main` at `4ffafcb` includes bounded API requests, retryable workspace and case loading, serialized queue polling, isolated queue/detail failures, settings draft protection, accessible error/loading/not-found pages, and mobile layout improvements. Realtime recovery preserves closed calls and explicitly re-establishes human media after a disconnect without automatically returning audio to AI providers. Thirteen new Workers regressions cover these lifecycle fixes.
@@ -17,7 +36,7 @@ Two additional timing defects were reproduced before repair: a caller action bet
 | `pnpm demo --skip-build` on ports 8899/8900 | Fresh local runtime starts, workspace creation and fictional replay produce a nurse draft |
 | `git diff --check` | Pass |
 
-The final browser suite passed against the current built app, including stale queue/detail responses, outage recovery, retained invitation retries, settings drafts, takeover revision races, two-way fake microphones, mute/unmute, and signed local phone-protocol emulation. An earlier integrated run exceeded the shared local client's 30-enrollment hourly quota after the two new scenarios added four sessions. Those scenarios now use separate documentation IP identities only on exact loopback URLs; the unchanged production limiter remains exercised. This is local mock evidence; no PSTN call, new live-provider call or hosted deployment was exercised by this polish pass. The separate September 29 live-provider measurements below predate these final lifecycle changes and do not reverify them against providers.
+The final browser suite passed against the current built app, including stale queue/detail responses, outage recovery, retained invitation retries, settings drafts, takeover revision races, two-way fake microphones, mute/unmute, and signed local phone-protocol emulation. An earlier integrated run exceeded the shared local client's 30-enrollment hourly quota after the two new scenarios added four sessions. Those scenarios now use separate documentation IP identities only on exact loopback URLs; the unchanged production limiter remains exercised. This regression suite uses local mock evidence and does not exercise PSTN or hosted deployment. The separate opt-in live run documented above verifies the polished audio implementation against the configured providers; older runs below remain historical evidence.
 
 Remote `main` had a failed [Verify run 36542985041](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36542985041): static tests/build passed, but browser tests had an observation race during queued agent playback and a post-unmute audio dropout. The queued-playback assertion now checks both measurements in one snapshot. The first polish revision `98c75da` passed those audio assertions remotely but failed takeover, staying WAITING in [PR run 36547001172](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36547001172) and CLAIMED in [push run 36546985432](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36546985432). Both revision races were reproduced locally before the repair above. The jitter defect was independently reproduced; it is not established as the cause of the older post-unmute failure.
 

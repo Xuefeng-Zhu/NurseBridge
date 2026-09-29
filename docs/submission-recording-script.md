@@ -32,7 +32,7 @@ Show the nurse claiming the call, enabling audio, and connected human status.
 
 “The nurse claims the call and joins the existing session. NurseBridge clears queued agent output and checks playback in both directions before showing the human connection as ready. The waiting period and nurse conversation are not sent to the AI provider. A caller who declines automation can still wait for a nurse.”
 
-When using a screenshot montage, state that it shows connection status from local tests. Do not claim the recording demonstrates physical two-device audibility. For the evidence slide, identify the real-provider check as saved September 29 local evidence that predates the latest polish; the refreshed visual walkthrough uses providers-off replay.
+When using a screenshot montage, state that it shows connection status from local tests. Do not claim the recording demonstrates physical two-device audibility. For the evidence slide, identify the real-provider check as September 29 local evidence recorded after the final audio recovery fixes; the refreshed visual walkthrough uses providers-off replay.
 
 ## 1:55–2:25 — AssemblyAI and implementation
 
