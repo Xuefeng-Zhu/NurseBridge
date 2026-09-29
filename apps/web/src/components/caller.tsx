@@ -36,12 +36,14 @@ function CallerExperience() {
   const [deletedCallId, setDeletedCallId] = useState<string | null>(null);
   const [callUnavailable, setCallUnavailable] = useState(false);
   const deletedCalls = useRef(new Set<string>());
+  const dismissedCalls = useRef(new Set<string>());
   const [now, setNow] = useState(() => Date.now());
   const acceptSnapshot = useCallback((snapshot: CallSnapshot) => {
-    if (deletedCalls.current.has(snapshot.id)) return;
+    if (deletedCalls.current.has(snapshot.id) || dismissedCalls.current.has(snapshot.id)) return;
     setCall((previous) => previous && previous.id === snapshot.id && previous.revision > snapshot.revision ? previous : snapshot);
   }, []);
   const acceptDeletion = useCallback((id: string, unavailable = false) => {
+    if (dismissedCalls.current.has(id)) return;
     deletedCalls.current.add(id);
     setCallUnavailable(unavailable);
     setDeletedCallId(id); setCall(null); setError(null); setRestoreError(null); setLoaded(true);
@@ -55,8 +57,9 @@ function CallerExperience() {
       try {
         const { calls } = await api<{ calls: CallSnapshot[] }>("/api/calls");
         const requestedId = new URLSearchParams(window.location.search).get("call");
-        const candidate = calls.find((item) => item.id === requestedId && item.callerParticipantId === session?.participantId) || calls.find((item) => item.callerParticipantId === session?.participantId && item.queueState !== "CLOSED");
-        candidateId = candidate?.id || requestedId || undefined;
+        const available = calls.filter((item) => !dismissedCalls.current.has(item.id));
+        const candidate = available.find((item) => item.id === requestedId && item.callerParticipantId === session?.participantId) || available.find((item) => item.callerParticipantId === session?.participantId && item.queueState !== "CLOSED");
+        candidateId = candidate?.id || (requestedId && !dismissedCalls.current.has(requestedId) ? requestedId : undefined);
         if (candidateId) {
           const { snapshot } = await api<{ snapshot: CallSnapshot }>(`/api/calls/${candidateId}`);
           if (snapshot.callerParticipantId !== session?.participantId) throw new Error("This call is not available to this caller.");
@@ -90,6 +93,11 @@ function CallerExperience() {
   const command = async (type: string, body: Record<string, unknown> = {}) => { if (!call || call.queueState === "CLOSED" || deletedCalls.current.has(call.id)) return; const response = await mutate<{ snapshot: CallSnapshot }>(`/api/calls/${call.id}/${type}`, body); acceptSnapshot(response.snapshot); };
   const join = () => run(async () => { if (!loaded || restoreError || call || deletedCallId) return; const response = await mutate<{ call: CallSnapshot }>("/api/calls"); acceptSnapshot(response.call); setConsent(false); });
   const startAnother = () => {
+    // A stale queue projection or in-flight old callback must not reopen the
+    // terminal screen after the caller explicitly starts a different call.
+    const dismissedId = call?.id || deletedCallId;
+    if (dismissedId) dismissedCalls.current.add(dismissedId);
+    audio.disconnect();
     const url = new URL(window.location.href); url.searchParams.delete("call"); window.history.replaceState(null, "", url);
     setCall(null); setDeletedCallId(null); setCallUnavailable(false); setConsent(false); setError(null); setLoaded(false);
     setRestoreAttempt((attempt) => attempt + 1); setReplayIndex(0); setReplayText(REPLAY_LINES[0]);

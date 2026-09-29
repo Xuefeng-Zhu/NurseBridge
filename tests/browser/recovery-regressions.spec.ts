@@ -11,9 +11,14 @@ async function workspace(page: Page, route = '/caller') {
 }
 
 async function join(page: Page): Promise<CallSnapshot> {
-  const created = page.waitForResponse(response => new URL(response.url()).pathname === '/api/calls' && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Join call queue' }).click();
-  const response = await created;
+  const button = page.getByRole('button', { name: 'Join call queue' });
+  await expect(button).toBeEnabled();
+  // Observe both promises together so a failed click cannot leave an unhandled
+  // response wait that hides the actual actionability failure.
+  const [response] = await Promise.all([
+    page.waitForResponse(response => new URL(response.url()).pathname === '/api/calls' && response.request().method() === 'POST'),
+    button.click(),
+  ]);
   expect(response.status()).toBe(201);
   return (await response.json()).call as CallSnapshot;
 }
@@ -74,6 +79,12 @@ test('caller restoration retries failed list and detail reads without creating a
 test('caller closes terminal calls from polling and deletion events and removes recovery controls', async ({ page }) => {
   await workspace(page);
   const owned = new Set<string>();
+  let staleProjection: CallSnapshot | undefined;
+  // Keep interception enabled for the whole scenario: removing its last route
+  // while a new connection ticket starts can strand that browser request.
+  await page.route(`${baseURL}/api/calls`, route => route.request().method() === 'GET' && staleProjection
+    ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ calls: [staleProjection] }) })
+    : route.continue());
   try {
     const closed = await join(page); owned.add(closed.id);
     await expect(page.locator('.audio-state').getByText('connected', { exact: true })).toBeVisible();
@@ -85,10 +96,16 @@ test('caller closes terminal calls from polling and deletion events and removes 
     await expect(page.getByRole('button', { name: 'Leave queue & end call' })).toHaveCount(0);
     await expect(page.getByText('Your place in the queue is preserved.', { exact: true })).toHaveCount(0);
 
+    let retiredProjection = closed;
     for (const via of ['poll', 'socket'] as const) {
+      // D1 projection can lag the authoritative CLOSED/deleted state. Starting
+      // another call must dismiss this known terminal case even if listed active.
+      staleProjection = retiredProjection;
       await page.getByRole('button', { name: 'Start another call' }).click();
       const deleted = await join(page); owned.add(deleted.id);
+      expect(deleted.id).not.toBe(retiredProjection.id);
       await expect(page.locator('.audio-state').getByText('connected', { exact: true })).toBeVisible();
+      staleProjection = undefined;
       if (via === 'poll') {
         await page.evaluate(() => (window as unknown as { __nursebridge: { close(): void } }).__nursebridge.close());
       } else {
@@ -110,6 +127,7 @@ test('caller closes terminal calls from polling and deletion events and removes 
         await expect(page.getByRole('heading', { name: 'Your call was deleted.' })).toBeVisible();
         await expect(page.getByRole('button', { name: 'Join call queue' })).toHaveCount(0);
       }
+      retiredProjection = deleted;
     }
   } finally {
     await page.unrouteAll({ behavior: 'ignoreErrors' });
