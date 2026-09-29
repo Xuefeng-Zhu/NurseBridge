@@ -82,7 +82,7 @@ The optional phone adapter accepts signed Twilio events and translates phone aud
 | Presentation script | [Three-minute recording outline](submission-recording-script.md) |
 | Engineering evidence | [Test results](test-results.md), [September 29 fictional live proof](evidence/local-live-voice-2026-09-29.json), [local phone protocol proof](evidence/phone-protocol-proof.json) |
 
-The inbound phone implementation is merged into `main` (merge `85b1f15`). The inspected source baseline is `4ffafcb`; the September 29 polish changes are prepared on the `codex/demo-submission-polish` review branch. Publish the intended reviewed source revision before supplying its link to judges; a private repository URL does not grant judge access.
+The inbound phone implementation is merged into `main` (merge `85b1f15`). The inspected source baseline is `4ffafcb`; the September 29 polish changes are on the `codex/demo-submission-polish` review branch in [private PR #10](https://github.com/Xuefeng-Zhu/NurseBridge/pull/10). Publish the intended reviewed source revision before supplying its link to judges; a private repository URL does not grant judge access.
 
 ## Judge testing instructions
 
@@ -114,7 +114,7 @@ For deterministic automated browser and phone checks, run `pnpm exec playwright 
 
 | Claim | Evidence and scope |
 | --- | --- |
-| Local workflow and regression coverage | The September 29 polish pass passed 146 unit tests, 164 Workers tests, 19 tooling tests and 27 browser tests, with 1 opt-in live-provider test skipped. Typecheck, lint and the production build also passed. Browser coverage includes desktop/mobile recovery, queue refresh, settings draft preservation, terminal calls and phone protocol audio. |
+| Local workflow and regression coverage | The September 29 polish pass passed 165 unit tests, 173 Workers tests, 19 tooling tests and 29 browser tests, with 1 opt-in live-provider test skipped. Typecheck, lint and the production build also passed. Browser coverage includes desktop/mobile recovery, queue refresh, settings draft preservation, terminal calls, takeover revision races and phone protocol audio. |
 | AssemblyAI integration exercised | The September 29 local real-provider acceptance completed in 30.1 seconds: one finalized caller turn, one evidence-linked fact, a subsequent agent reply, non-silent human-channel playback in both browser worklets after takeover, and successful case/provider cleanup. This saved result predates the latest polish changes and does not establish ongoing availability or broad accuracy. |
 | Human relay | Local fixture audio tests exercised microphone capture, transport, and receiving worklets in both directions, with zero stale agent samples in the captured takeover proofs. Physical-device audibility is still a separate check. |
 | Optional inbound phone | Local signed protocol-emulator and browser tests exercised phone-to-nurse relay. No PSTN call, owned number, or live carrier deployment was verified. |

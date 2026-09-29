@@ -1,5 +1,5 @@
 export class ApiError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
+  constructor(readonly status: number, message: string, readonly code?: string) { super(message); }
 }
 
 type RequestDependencies = {
@@ -40,7 +40,7 @@ export async function requestJson<T>(path: string, options: RequestInit = {}, de
       const response = await fetcher(path, { ...options, signal: controller.signal, headers, cache: "no-store" });
       const body: unknown = await response.json().catch(() => undefined);
       controller.signal.throwIfAborted();
-      const result = body && typeof body === "object" ? body as { error?: string | { message?: string }; message?: string } : undefined;
+      const result = body && typeof body === "object" ? body as { error?: string | { message?: string }; message?: string; code?: unknown } : undefined;
       if (response.ok) {
         if (!result) throw new ApiError(502, "The service returned an unreadable response. Please try again.");
         return body as T;
@@ -50,7 +50,8 @@ export async function requestJson<T>(path: string, options: RequestInit = {}, de
         continue;
       }
       const message = typeof result?.error === "string" ? result.error : result?.error?.message || result?.message;
-      throw new ApiError(response.status, typeof message === "string" ? message : `Request failed (${response.status}).`);
+      const code = typeof result?.code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(result.code) ? result.code : undefined;
+      throw new ApiError(response.status, typeof message === "string" ? message : `Request failed (${response.status}).`, code);
     }
   } catch (reason) {
     if (options.signal?.aborted) throw options.signal.reason;

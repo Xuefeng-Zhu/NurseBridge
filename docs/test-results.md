@@ -2,22 +2,26 @@
 
 ## Demo and recovery polish verified on 2026-09-29
 
-The working tree based on `main` at `4ffafcb` now includes bounded API requests, retryable workspace and case loading, serialized queue polling, isolated queue/detail failures, settings draft protection, accessible error/loading/not-found pages, and mobile layout improvements. Realtime recovery preserves closed calls and explicitly re-establishes human media after a disconnect without automatically returning audio to AI providers. Thirteen new Workers regressions cover these lifecycle fixes.
+The review branch based on `main` at `4ffafcb` includes bounded API requests, retryable workspace and case loading, serialized queue polling, isolated queue/detail failures, settings draft protection, accessible error/loading/not-found pages, and mobile layout improvements. Realtime recovery preserves closed calls and explicitly re-establishes human media after a disconnect without automatically returning audio to AI providers. Thirteen new Workers regressions cover these lifecycle fixes.
+
+Two additional timing defects were reproduced before repair: a caller action between the nurse's read, claim and takeover left the case waiting or claimed; a one-second microphone delivery backlog disconnected a valid 20fps stream. Takeover now refreshes and retries once only after a confirmed revision rejection, preserving ownership and cancellation and never retrying an ambiguous write. Audio now permits a bounded 20-frame backlog while limiting sustained capture to 20fps. Nine Workers regressions verify jitter, excessive traffic, clock rollback, stale frames and replacement sockets.
 
 | Executed check | Result |
 | --- | --- |
 | `pnpm typecheck` / `pnpm lint` | Pass |
-| `pnpm test` | 146 tests pass in 10 files |
-| `pnpm test:workers` | 164 tests pass in 8 files |
+| `pnpm test` | 165 tests pass in 12 files |
+| `pnpm test:workers` | 173 tests pass in 9 files |
 | `pnpm test:tooling` | 19 tests pass |
 | `pnpm build` | Audio worklets and Next.js/OpenNext Worker pass |
-| Isolated `pnpm test:e2e --skip-build` | 27 pass; 1 opt-in live-provider test skipped |
+| Isolated `pnpm test:e2e --skip-build` | 29 pass in 59.6 seconds; 1 opt-in live-provider test skipped |
 | `pnpm demo --skip-build` on ports 8899/8900 | Fresh local runtime starts, workspace creation and fictional replay produce a nurse draft |
 | `git diff --check` | Pass |
 
-The final browser suite passed twice against the current built app, including stale queue/detail responses, outage recovery, retained invitation retries, settings drafts, two-way fake microphones, mute/unmute, and signed local phone-protocol emulation. This is local mock evidence; no PSTN call, new live-provider call or hosted deployment was exercised by this polish pass. The separate September 29 live-provider measurements below predate these final lifecycle changes and do not reverify them against providers.
+The final browser suite passed against the current built app, including stale queue/detail responses, outage recovery, retained invitation retries, settings drafts, takeover revision races, two-way fake microphones, mute/unmute, and signed local phone-protocol emulation. An earlier integrated run exceeded the shared local client's 30-enrollment hourly quota after the two new scenarios added four sessions. Those scenarios now use separate documentation IP identities only on exact loopback URLs; the unchanged production limiter remains exercised. This is local mock evidence; no PSTN call, new live-provider call or hosted deployment was exercised by this polish pass. The separate September 29 live-provider measurements below predate these final lifecycle changes and do not reverify them against providers.
 
-Current remote `main` had a failed [Verify run 36542985041](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36542985041): static tests/build passed, but browser tests had an observation race during queued agent playback and a post-unmute audio dropout. The queued-playback assertion now checks both measurements in one snapshot. The dropout did not reproduce locally; its cause remains unproven. CI now retains an allowlisted JSON report containing only test locations/statuses/timing and numeric audio/state diagnostics on failure. Raw reports, screenshots, session cookies, traces and environment files are excluded. Three regression tests verify the sanitizer, and a local browser run produced the expected report. At the time of this local verification, the revised CI workflow and polish changes had not run remotely.
+Remote `main` had a failed [Verify run 36542985041](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36542985041): static tests/build passed, but browser tests had an observation race during queued agent playback and a post-unmute audio dropout. The queued-playback assertion now checks both measurements in one snapshot. The first polish revision `98c75da` passed those audio assertions remotely but failed takeover, staying WAITING in [PR run 36547001172](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36547001172) and CLAIMED in [push run 36546985432](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36546985432). Both revision races were reproduced locally before the repair above. The jitter defect was independently reproduced; it is not established as the cause of the older post-unmute failure.
+
+CI successfully retained its allowlisted failure JSON in both remote runs. It now includes test locations/statuses/timing, numeric audio/state diagnostics, and known takeover status/error codes. Raw reports, screenshots, session cookies, traces, URLs and raw errors are excluded. Sanitization and recovered-conflict console handling have unit coverage. See [PR #10 checks](https://github.com/Xuefeng-Zhu/NurseBridge/pull/10/checks) for remote verification of subsequent revisions; the table above records local verification.
 
 The refreshed 80-second narrated mock walkthrough, editable seven-slide deck, selectable-text PDF and cover use current UI screenshots. These assets describe fictional data and distinguish transcript replay from the earlier local real-provider evidence. `pnpm demo` runs a fresh loopback-only mock runtime without reading provider credentials; it is a rehearsal tool, not a hosted judge URL. Source publication, hosted identity/provider gates, physical devices, real telephone acceptance and the event's signed-in submission form remain outstanding.
 

@@ -1,8 +1,9 @@
-import { chromium, expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { chromium, expect, test, type Browser, type BrowserContext, type ConsoleMessage, type Page } from '@playwright/test';
 import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
 import { attachAudioDiagnostics } from './helpers/audio-diagnostics';
+import { watchTakeoverOutcomes } from './helpers/takeover-diagnostics';
 
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
 const origin = new URL(baseURL).origin;
@@ -83,13 +84,15 @@ test('visible intake preserves evidence and corrections, then relays both distin
   const caller = await audioBrowser(440);
   const nurse = await audioBrowser(660);
   const errors: string[] = [];
+  const nurseConsoleErrors: ConsoleMessage[] = [];
+  const takeoverTraffic = watchTakeoverOutcomes(nurse.page);
   let nurseWorkspaceReady = false;
   caller.page.on('pageerror', error => errors.push(`caller:${error.message}`));
   nurse.page.on('pageerror', error => errors.push(`nurse:${error.message}`));
   caller.page.on('console', message => { if (message.type() === 'error') errors.push(`caller:${message.text()}`); });
   nurse.page.on('console', message => {
     if (!nurseWorkspaceReady && message.location().url === `${origin}/api/demo/session` && message.text().includes('401')) return;
-    if (message.type() === 'error') errors.push(`nurse:${message.text()}`);
+    if (message.type() === 'error') nurseConsoleErrors.push(message);
   });
   try {
     await workspace(nurse.page);
@@ -175,8 +178,10 @@ test('visible intake preserves evidence and corrections, then relays both distin
     for (const page of [caller.page, nurse.page]) expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
     await caller.page.screenshot({ path: testInfo.outputPath('caller-mobile.png'), fullPage: true });
     await nurse.page.screenshot({ path: testInfo.outputPath('nurse-mobile.png'), fullPage: true });
+    errors.push(...(await takeoverTraffic.unexpectedConsoleErrors(nurseConsoleErrors)).map(message => `nurse:${message}`));
     expect(errors).toEqual([]);
   } finally {
+    await takeoverTraffic.attach(testInfo);
     await attachAudioDiagnostics(caller.page, testInfo, 'caller');
     await attachAudioDiagnostics(nurse.page, testInfo, 'nurse');
     // Shut down active fake capture/worklet graphs before Chromium's process cleanup.

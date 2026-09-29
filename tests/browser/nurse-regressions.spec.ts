@@ -2,6 +2,7 @@ import { chromium, expect, test, type Browser, type BrowserContext, type Page } 
 import { resolve } from 'node:path';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
 import { attachAudioDiagnostics } from './helpers/audio-diagnostics';
+import { watchTakeoverOutcomes } from './helpers/takeover-diagnostics';
 
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
 const origin = new URL(baseURL).origin;
@@ -100,6 +101,7 @@ test('switching fact editors preserves the target field and context tabs support
 test('reviewing another case during claim and conversation preserves active audio and call-scoped controls', async ({}, testInfo) => {
   const nurse = await audioBrowser(660);
   const caller = await audioBrowser(440);
+  const takeoverTraffic = watchTakeoverOutcomes(nurse.page);
   const pageErrors: string[] = [];
   let releaseClaim: (() => void) | undefined;
   for (const participant of [nurse, caller]) participant.page.on('pageerror', error => pageErrors.push(error.message));
@@ -191,6 +193,7 @@ test('reviewing another case during claim and conversation preserves active audi
     expect((await post(nurse.page, `/api/calls/${another.id}/end`)).ok()).toBe(true);
   } finally {
     releaseClaim?.();
+    await takeoverTraffic.attach(testInfo);
     await attachAudioDiagnostics(caller.page, testInfo, 'caller');
     await attachAudioDiagnostics(nurse.page, testInfo, 'nurse');
     for (const participant of [caller, nurse]) {

@@ -44,7 +44,7 @@ Show the architecture slide.
 
 Show the validation slide.
 
-“On September 29, a separate fictional local call used the real AssemblyAI and Nebius services. It finalized caller speech, extracted a supported fact, received an agent reply, and measured non-silent human audio in both browser worklets after takeover. Our polish regression suite also passed 27 browser tests, including recovery and a Twilio protocol adapter. Physical-device and real telephone-network acceptance remain pending.”
+“On September 29, a separate fictional local call used the real AssemblyAI and Nebius services. It finalized caller speech, extracted a supported fact, received an agent reply, and measured non-silent human audio in both browser worklets after takeover. Our polish regression suite also passed 29 browser tests, including recovery and a Twilio protocol adapter. Physical-device and real telephone-network acceptance remain pending.”
 
 ## 2:45–3:00 — Close
 

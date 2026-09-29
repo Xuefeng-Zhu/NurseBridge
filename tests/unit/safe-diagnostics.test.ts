@@ -1,7 +1,8 @@
 import { resolve } from 'node:path';
 import type { FullResult, TestCase, TestResult } from '@playwright/test/reporter';
 import { describe, expect, it, vi } from 'vitest';
-import { safeAudioDiagnostics } from '../reporters/safe-diagnostics-data';
+import { safeAudioDiagnostics, safeTakeoverOutcomes } from '../reporters/safe-diagnostics-data';
+import { unexpectedTakeoverConsoleErrors } from '../browser/helpers/takeover-diagnostics';
 import SafeDiagnosticsReporter from '../reporters/safe-diagnostics';
 import { mkdir, writeFile } from 'node:fs/promises';
 
@@ -24,6 +25,22 @@ describe('safe CI diagnostics', () => {
     }
   });
 
+  it('retains only known takeover outcomes, never request URLs or server messages', () => {
+    const result = safeTakeoverOutcomes([{ action: 'claim', status: 409, code: 'revision_conflict', url: '/SECRET', error: 'SECRET' }, { action: 'takeover', status: 200, code: 'SECRET' }, { action: 'SECRET', status: 409 }, { action: ['claim'], status: 409 }, { action: 'claim', status: 'SECRET' }]);
+    expect(result).toEqual([{ action: 'claim', status: 409, code: 'revision_conflict' }, { action: 'takeover', status: 200 }]);
+    expect(JSON.stringify(result)).not.toContain('SECRET');
+  });
+
+  it('excuses only the confirmed recovered revision conflict console response', () => {
+    const messages = [{ url: '/claim', text: 'Failed to load resource: the server responded with a status of 409 (Conflict)' }];
+    const conflict = { url: '/claim', action: 'claim' as const, status: 409, code: 'revision_conflict' };
+    expect(unexpectedTakeoverConsoleErrors(messages, [conflict, { ...conflict, status: 200, code: undefined }])).toEqual([]);
+    expect(unexpectedTakeoverConsoleErrors(messages, [conflict])).toHaveLength(1);
+    expect(unexpectedTakeoverConsoleErrors(messages, [{ ...conflict, code: 'already_claimed' }, { ...conflict, status: 200 }])).toHaveLength(1);
+    expect(unexpectedTakeoverConsoleErrors([{ ...messages[0]!, url: '/another-call/claim' }], [conflict, { ...conflict, status: 200 }])).toHaveLength(1);
+    expect(unexpectedTakeoverConsoleErrors([{ url: '/claim', text: 'Unexpected 409 application error' }], [conflict, { ...conflict, status: 200 }])).toHaveLength(1);
+  });
+
   it('reports failures while excluding titles, errors, stdout, trace paths and untrusted attachment fields', async () => {
     vi.mocked(writeFile).mockClear();
     const reporter = new SafeDiagnosticsReporter();
@@ -44,6 +61,6 @@ describe('safe CI diagnostics', () => {
     expect(path).toBe(resolve('output/playwright/ci/browser-diagnostics.json'));
     expect(options).toEqual({ mode: 0o600 });
     expect(String(body)).not.toContain('SECRET');
-    expect(JSON.parse(String(body))).toEqual({ version: 1, status: 'failed', infrastructureErrors: 1, tests: [{ file: 'nurse-regressions.spec.ts', line: 99, column: 1, status: 'failed', durationMs: 15000, retry: 0, audio: [{ role: 'caller', available: true, metrics: { dominantFrequency: 0 }, state: { connection: 'connected' } }] }] });
+    expect(JSON.parse(String(body))).toEqual({ version: 1, status: 'failed', infrastructureErrors: 1, tests: [{ file: 'nurse-regressions.spec.ts', line: 99, column: 1, status: 'failed', durationMs: 15000, retry: 0, audio: [{ role: 'caller', available: true, metrics: { dominantFrequency: 0 }, state: { connection: 'connected' } }], takeover: [] }] });
   });
 });

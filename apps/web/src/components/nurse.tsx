@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useCallAudio } from "./call-audio";
 import { ApiError } from "./workspace-api";
 import { startPolling } from "./serialized-polling";
+import { recoverTakeover } from "./takeover-recovery";
 import { Icon } from "./icons";
 import { api, AuthGate, Badge, clockTime, errorMessage, mutate, Notice, PageHeader, timeAgo, useWorkspace } from "./workspace";
 
@@ -27,6 +28,9 @@ function NurseWorkspace() {
   const selectedIdRef = useRef<string | null>(null);
   const [activeAudioCallId, setActiveAudioCallId] = useState<string | null>(null);
   const activeAudioCallIdRef = useRef<string | null>(null);
+  const takeoverAttempt = useRef(0);
+  const participantIdRef = useRef(session?.participantId);
+  participantIdRef.current = session?.participantId;
   const [activeCall, setActiveCall] = useState<CallSnapshot | null>(null);
   const deletedCallIds = useRef(new Set<string>());
   const releasedCallIds = useRef(new Set<string>());
@@ -71,6 +75,7 @@ function NurseWorkspace() {
     setCalls((previous) => previous.filter((call) => call.id !== id));
     if (selectedIdRef.current === id) selectCall(null);
     if (activeAudioCallIdRef.current === id) {
+      takeoverAttempt.current++;
       activeAudioCallIdRef.current = null; setActiveAudioCallId(null); setActiveCall(null);
       setNotice("The active case is no longer available. Its audio connection has ended.");
     }
@@ -78,6 +83,7 @@ function NurseWorkspace() {
   const audio = useCallAudio("nurse", acceptSnapshot, forgetCall);
   const releaseAudio = useCallback((id = activeAudioCallIdRef.current) => {
     if (!id || activeAudioCallIdRef.current !== id) return;
+    takeoverAttempt.current++;
     releasedCallIds.current.add(id);
     activeAudioCallIdRef.current = null; setActiveAudioCallId(null); setActiveCall(null);
     audio.disconnect();
@@ -132,6 +138,7 @@ function NurseWorkspace() {
     return () => { for (const poll of polls.values()) poll.stop(); detailPolls.current = new Map(); };
   }, [selectedId, activeAudioCallId, acceptSnapshot, audio.disconnect, forgetCall]);
   useEffect(() => { const interval = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(interval); }, []);
+  useEffect(() => () => { takeoverAttempt.current++; }, []);
   useEffect(() => {
     if (activeAudioCallId) {
       if (activeCall?.queueState === "CLOSED") { releaseAudio(); return; }
@@ -150,14 +157,19 @@ function NurseWorkspace() {
   const command = async (type: string, body: Record<string, unknown> = {}, method = "POST") => { if (selected) return commandForCall(selected.id, type, body, method); };
   const takeover = () => run(async () => {
     const target = selected;
-    if (!target || activeAudioCallIdRef.current && activeAudioCallIdRef.current !== target.id) return;
+    const participantId = session?.participantId;
+    if (!target || !participantId || activeAudioCallIdRef.current && activeAudioCallIdRef.current !== target.id) return;
+    const attempt = ++takeoverAttempt.current;
     // Lock immediately, before microphone permissions or HTTP responses can yield.
     lockAudio(target);
     await audio.enableMedia();
-    const { snapshot: fresh } = await api<{ snapshot: CallSnapshot }>(`/api/calls/${target.id}`);
-    acceptSnapshot(fresh);
-    const claimed = fresh.claim && fresh.claim.participantId === session?.participantId && fresh.claim.expiresAt > Date.now() ? fresh : await commandForCall(target.id, "claim", { expectedRevision: fresh.controlRevision });
-    await commandForCall(target.id, "takeover", { expectedRevision: claimed.controlRevision });
+    await recoverTakeover({
+      callId: target.id, participantId,
+      isCurrent: () => takeoverAttempt.current === attempt && activeAudioCallIdRef.current === target.id && participantIdRef.current === participantId && !deletedCallIds.current.has(target.id) && !releasedCallIds.current.has(target.id),
+      read: async () => (await api<{ snapshot: CallSnapshot }>(`/api/calls/${target.id}`)).snapshot,
+      command: (type, revision) => commandForCall(target.id, type, { expectedRevision: revision }),
+      onSnapshot: acceptSnapshot,
+    });
   });
   const endActiveCall = () => run(async () => {
     const id = activeAudioCallIdRef.current;

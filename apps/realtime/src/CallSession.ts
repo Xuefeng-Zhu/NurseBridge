@@ -14,7 +14,7 @@ import type { Env } from './env';
 import { PhoneTransport } from './telephony/transport';
 import { terminatePhoneCall, releasePhoneReservation } from './telephony/twilio';
 
-type Attachment={authenticated:boolean;role?:Role;participantId?:string;expiresAt:number;lastHeartbeat:number;mediaReady:boolean;lastSequence:number;audioWindowStart?:number;audioFrames?:number;pending:{sequence:number;streamKind:number;responseId?:number}[];transport?:'phone';phone?:{streamSid:string;lastEventSequence:number;nextAudioSequence:number;lastTimestamp:number;captureReady:boolean;playbackReady:boolean}};
+type Attachment={authenticated:boolean;role?:Role;participantId?:string;expiresAt:number;lastHeartbeat:number;mediaReady:boolean;lastSequence:number;audioBudgetMs?:number;audioBudgetUpdatedAt?:number;pending:{sequence:number;streamKind:number;responseId?:number}[];transport?:'phone';phone?:{streamSid:string;lastEventSequence:number;nextAudioSequence:number;lastTimestamp:number;captureReady:boolean;playbackReady:boolean}};
 type PhoneBinding={provider:'twilio';workspaceId:string;accountSid:string;providerCallSid:string;streamTokenHash:string;streamTokenExpiresAt:number;consumed:boolean;streamSid?:string;terminated:boolean;terminationPending:boolean;terminationAttempts:number;terminationRetryAt?:number;reservationReleasePending?:boolean;consentDecision?:'accepted'|'declined'|'unavailable';consentCommandId?:string};
 type Ticket={workspaceId:string;participantId:string;role:Role;expiresAt:number;audience:'nursebridge-realtime';callId:string};
 const errorResult=(error:unknown):RpcResult=>error instanceof CommandError?{ok:false,status:error.status,error:error.message,code:error.code}:{ok:false,status:503,error:'The session is temporarily unavailable.',code:'session_unavailable'};
@@ -432,8 +432,14 @@ export class CallSession extends DurableObject<Env>{
   if(frame.payload.length!==2400||frame.sampleRate!==24000)return socket.close(1008,'Expected 50 ms mono PCM16 at 24 kHz');
   this.send(socket,{type:'audio-ack',sequence:frame.sequence,streamKind:frame.streamKind,credits:1});
   if(frame.sequence<=a.lastSequence||frame.controlEpoch!==state.controlEpoch)return;
-  const now=Date.now();if(!a.audioWindowStart||now-a.audioWindowStart>=1000){a.audioWindowStart=now;a.audioFrames=0;}a.audioFrames=(a.audioFrames??0)+1;
-  if(a.audioFrames>30){this.gap('Audio sender exceeded the realtime delivery limit.');socket.close(1008,'Audio rate exceeded');return;}
+  // Each frame carries 50ms of audio. Allow the existing 20-credit capture
+  // backlog to arrive together, then refill only at the real capture rate.
+  // A fixed arrival window wrongly closed healthy sockets after delivery jitter.
+  const now=Date.now(),updatedAt=a.audioBudgetUpdatedAt??now;
+  a.audioBudgetMs=Math.min(1000,(a.audioBudgetMs??1000)+Math.max(0,now-updatedAt));
+  a.audioBudgetUpdatedAt=Math.max(now,updatedAt);
+  if(a.audioBudgetMs<50){this.gap('Audio sender exceeded the realtime delivery limit.');socket.close(1008,'Audio rate exceeded');return;}
+  a.audioBudgetMs-=50;
   a.lastSequence=frame.sequence;socket.serializeAttachment(a);
   if(a.role==='caller'&&a.participantId===state.callerParticipantId){
    frame.streamKind=AudioStreamKind.Patient;

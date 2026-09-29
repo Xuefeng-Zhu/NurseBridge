@@ -4,6 +4,11 @@ import { ApiError, requestJson } from "../../apps/web/src/components/workspace-a
 const response = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 describe("workspace API reads", () => {
+  it("retains a server revision-conflict code without retrying its rejected write", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response(409, { error: "The call changed.", code: "revision_conflict" }));
+    await expect(requestJson("/api/calls/example/claim", { method: "POST" }, { fetcher })).rejects.toMatchObject({ status: 409, code: "revision_conflict", message: "The call changed." });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
   it("retries bounded transient GET failures", async () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(response(503, { error: "warming" }))
