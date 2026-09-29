@@ -53,8 +53,13 @@ export class CallSession extends DurableObject<Env>{
   const phoneRow=this.store.storage.sql.exec<{body:string}>('SELECT body FROM phone_binding WHERE id=1').toArray()[0];if(phoneRow)this.phone=JSON.parse(phoneRow.body) as PhoneBinding;
   this.store.storage.sql.exec("UPDATE provider_connections SET status='manual_reconciliation_required' WHERE status='connecting'");
   if(this.state&&!this.state.deleted&&(this.state.provider.connected||this.state.participants.caller||this.state.participants.nurse)){
-   this.mutate(s=>{s.provider.connected=false;s.provider.warning='Session restarted; a transcription gap may be present.';s.providerSession.status='interrupted';s.aiStatus='stopped';s.conversationOwner='NONE';s.waitingReason='technical_failure';s.humanRequested=true;s.controlEpoch++;s.responseGeneration++;s.participants={caller:false,nurse:false};s.mediaReady={caller:false,nurse:false};s.queueState=s.claim?'CLAIMED':'WAITING';delete s.handoff;s.warnings.push('Session restarted. Automated intake will not restart; reconnect for nurse help.');s.escalations.push({id:crypto.randomUUID(),reason:'technical_failure',message:'Call interrupted by restart; nurse help requested.',at:Date.now()});},'recovery','Session recovered from durable storage.');
+   if(this.state.queueState==='CLOSED'){
+    // Closure is durable before socket close callbacks run. A restart in that
+    // interval must clear transport presence without reopening the call.
+    this.mutate(s=>{s.provider.connected=false;if(['active','connecting','ending'].includes(s.providerSession.status)){s.providerSession.status='ended';s.providerSession.endedAt??=Date.now();}s.aiStatus='stopped';s.conversationOwner='NONE';s.participants={caller:false,nurse:false};s.mediaReady={caller:false,nurse:false};delete s.handoff;delete s.flushIssuedFor;},'terminal-recovery','Cleared stale connections for an ended call.');
+   }else this.mutate(s=>{s.provider.connected=false;s.provider.warning='Session restarted; a transcription gap may be present.';s.providerSession.status='interrupted';s.aiStatus='stopped';s.conversationOwner='NONE';s.waitingReason='technical_failure';s.humanRequested=true;s.controlEpoch++;s.responseGeneration++;s.participants={caller:false,nurse:false};s.mediaReady={caller:false,nurse:false};s.queueState=s.claim?'CLAIMED':'WAITING';delete s.handoff;s.warnings.push('Session restarted. Automated intake will not restart; reconnect for nurse help.');s.escalations.push({id:crypto.randomUUID(),reason:'technical_failure',message:'Call interrupted by restart; nurse help requested.',at:Date.now()});},'recovery','Session recovered from durable storage.');
    for(const socket of ctx.getWebSockets())socket.close(1012,'Reconnect with a new connection ticket');
+   this.ctx.waitUntil(this.flushProjection());
   }
   // A phone cannot obtain a fresh browser ticket after object recovery. End its
   // carrier leg durably instead of keeping an inaudible, billable call alive.
@@ -382,8 +387,12 @@ export class CallSession extends DurableObject<Env>{
    if(input.type==='heartbeat'){if(this.state?.claim&&this.state.claim.participantId===a.participantId&&a.role!=='caller'){this.state.claim.expiresAt=Date.now()+30000;this.checkpoint();}this.send(socket,{type:'heartbeat',now:Date.now()});return;}
    if(input.type==='media-ready'){
     a.mediaReady=input.microphone===true&&input.playback===true;socket.serializeAttachment(a);
-    if(a.role==='caller')this.mutate(s=>{s.mediaReady.caller=a!.mediaReady;},'media-ready','Caller microphone and playback readiness updated.');
-    else if((a.role==='nurse'||a.role==='admin')&&this.state?.claim?.participantId===a.participantId)this.mutate(s=>{s.mediaReady.nurse=a!.mediaReady;s.participants.nurse=true;},'media-ready','Nurse microphone and playback readiness updated.');
+    const role=a.role==='caller'?'caller':(a.role==='nurse'||a.role==='admin')&&this.state?.claim?.participantId===a.participantId?'nurse':undefined;
+    if(role&&this.state&&!this.state.deleted&&this.state.queueState!=='CLOSED'){
+     const wasReady=this.state.mediaReady[role];const presence=this.participantMedia(role);
+     this.mutate(s=>{s.mediaReady[role]=presence.mediaReady;s.participants[role]=presence.connected;},'media-ready',`${role==='caller'?'Caller':'Nurse'} microphone and playback readiness updated.`);
+     if(wasReady&&!presence.mediaReady)this.interruptHumanMedia(`${role==='caller'?'Caller':'Nurse'} audio became unavailable. Restore audio and retry human access.`);
+    }
     await this.beginHandoff();if(a.role==='caller')this.ctx.waitUntil(this.startIntake());this.publish();return;
    }
    if(input.type==='playback-flushed'){this.playbackFlushed(a,input);return;}
@@ -454,7 +463,7 @@ export class CallSession extends DurableObject<Env>{
   this.abortAi('takeover',false);this.stopProvider();this.publish();
  }
  private async finishHandoff(){
-  const s=this.state;if(!s?.handoff||!s.handoff.callerFlushed||!s.handoff.callerHeard||!s.handoff.nurseHeard)return;
+  const s=this.state;if(!s?.handoff||!s.handoff.callerFlushed||!s.handoff.callerHeard||!s.handoff.nurseHeard||!s.participants.caller||!s.participants.nurse||!s.mediaReady.caller||!s.mediaReady.nurse)return;
   this.mutate(next=>{next.queueState='CONNECTED';next.conversationOwner='NURSE';next.aiStatus='stopped';next.controlRevision++;next.claim!.expiresAt=Date.now()+600000;next.timings={...next.timings,handoffMs:Date.now()-(next.handoffStartedAt??Date.now())};delete next.handoff;},'connected','Two-way human audio playback confirmed. AI provider audio forwarding is disabled.');this.stopProvider();this.publish();
  }
  async webSocketClose(socket:WebSocket,code=1000,reason=''){
@@ -464,13 +473,33 @@ export class CallSession extends DurableObject<Env>{
   try{socket.close([1005,1006,1015].includes(code)?1000:code,reason);}catch{/* Already closed. */}
  }
  async webSocketError(socket:WebSocket){this.disconnected(socket);try{socket.close(1011,'Connection failed');}catch{}}
+ private participantMedia(role:'caller'|'nurse',excluded?:WebSocket){
+  const now=Date.now();const participantId=role==='caller'?this.state?.callerParticipantId:this.state?.claim?.participantId;
+  const peers=this.ctx.getWebSockets().flatMap(socket=>{
+   if(socket===excluded||socket.readyState!==WebSocket.OPEN)return[];
+   const a=socket.deserializeAttachment() as Attachment|null;
+   return a?.authenticated&&a.participantId===participantId&&(role==='caller'?a.role==='caller':a.role==='nurse'||a.role==='admin')&&a.expiresAt>now&&now-a.lastHeartbeat<=30000?[a]:[];
+  });
+  return{connected:peers.length>0,mediaReady:peers.some(a=>a.mediaReady)};
+ }
+ private interruptHumanMedia(message:string){
+  const state=this.state;if(!state||state.deleted||state.queueState==='CLOSED'||!['NURSE','HANDOFF_PENDING'].includes(state.conversationOwner))return false;
+  this.mutate(s=>{s.conversationOwner='NONE';s.queueState=s.claim?'CLAIMED':'WAITING';s.humanRequested=true;s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;s.controlRevision++;if(s.claim&&!s.participants.nurse)s.claim.expiresAt=Date.now()+30000;delete s.handoff;delete s.flushIssuedFor;},'human-audio-interrupted',message);
+  this.abortAi('human-audio-interrupted',false);this.stopProvider();return true;
+ }
  private disconnected(socket:WebSocket){
   const a=socket.deserializeAttachment() as Attachment|null;if(!a?.authenticated||!this.state)return;
   if(a.transport==='phone'){this.phoneTransportFailure(socket);return;}
   if(this.state.deleted)return;
-  if(this.ctx.getWebSockets().some(other=>{if(other===socket)return false;const peer=other.deserializeAttachment() as Attachment|null;return peer?.authenticated&&peer.participantId===a.participantId&&peer.role===a.role&&other.readyState===WebSocket.OPEN;}))return;
-  if(a.role==='caller'){this.mutate(s=>{s.participants.caller=false;s.mediaReady.caller=false;},'caller-disconnected','Caller disconnected; queue arrival time preserved.');if(this.state.conversationOwner==='AI')this.waitForNurse('technical_failure','Caller disconnected during intake. Reconnect for nurse help.');else{this.abortAi('caller-disconnected');this.stopProvider();}}
-  else if(a.participantId===this.state.claim?.participantId){this.mutate(s=>{s.participants.nurse=false;s.mediaReady.nurse=false;s.conversationOwner='NONE';s.queueState=s.queueState==='CLOSED'?'CLOSED':'CLAIMED';s.humanRequested=true;s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;if(s.claim)s.claim.expiresAt=Date.now()+30000;delete s.handoff;},'nurse-disconnected','Nurse disconnected. Retry human access; AI will not restart automatically.');this.abortAi('nurse-disconnected',false);this.stopProvider();}
+  const role=a.role==='caller'?'caller':(a.role==='nurse'||a.role==='admin')&&a.participantId===this.state.claim?.participantId?'nurse':undefined;if(!role)return;
+  const presence=this.participantMedia(role,socket);const wasReady=this.state.mediaReady[role];
+  if(presence.connected===this.state.participants[role]&&presence.mediaReady===wasReady)return;
+  this.mutate(s=>{s.participants[role]=presence.connected;s.mediaReady[role]=presence.mediaReady;},`${role}-disconnected`,`${role==='caller'?'Caller':'Nurse'} connection changed; queue arrival time preserved.`);
+  const interrupted=(!presence.connected||wasReady&&!presence.mediaReady)&&this.interruptHumanMedia(`${role==='caller'?'Caller':'Nurse'} audio disconnected. Restore audio and retry human access.`);
+  if(!interrupted&&!presence.connected&&this.state.queueState!=='CLOSED'){
+   if(role==='caller'){if(this.state.conversationOwner==='AI')this.waitForNurse('technical_failure','Caller disconnected during intake. Reconnect for nurse help.');else{this.abortAi('caller-disconnected');this.stopProvider();}}
+   else{this.mutate(s=>{s.conversationOwner='NONE';s.queueState='CLAIMED';s.humanRequested=true;s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;if(s.claim)s.claim.expiresAt=Date.now()+30000;delete s.handoff;},'nurse-disconnected','Nurse disconnected. Retry human access; AI will not restart automatically.');this.abortAi('nurse-disconnected',false);this.stopProvider();}
+  }
   this.publish();
  }
  private async startIntake(){

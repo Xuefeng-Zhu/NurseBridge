@@ -1,5 +1,26 @@
 # Test results
 
+## Demo and recovery polish verified on 2026-09-29
+
+The working tree based on `main` at `4ffafcb` now includes bounded API requests, retryable workspace and case loading, serialized queue polling, isolated queue/detail failures, settings draft protection, accessible error/loading/not-found pages, and mobile layout improvements. Realtime recovery preserves closed calls and explicitly re-establishes human media after a disconnect without automatically returning audio to AI providers. Thirteen new Workers regressions cover these lifecycle fixes.
+
+| Executed check | Result |
+| --- | --- |
+| `pnpm typecheck` / `pnpm lint` | Pass |
+| `pnpm test` | 146 tests pass in 10 files |
+| `pnpm test:workers` | 164 tests pass in 8 files |
+| `pnpm test:tooling` | 19 tests pass |
+| `pnpm build` | Audio worklets and Next.js/OpenNext Worker pass |
+| Isolated `pnpm test:e2e --skip-build` | 27 pass; 1 opt-in live-provider test skipped |
+| `pnpm demo --skip-build` on ports 8899/8900 | Fresh local runtime starts, workspace creation and fictional replay produce a nurse draft |
+| `git diff --check` | Pass |
+
+The final browser suite passed twice against the current built app, including stale queue/detail responses, outage recovery, retained invitation retries, settings drafts, two-way fake microphones, mute/unmute, and signed local phone-protocol emulation. This is local mock evidence; no PSTN call, new live-provider call or hosted deployment was exercised by this polish pass. The separate September 29 live-provider measurements below predate these final lifecycle changes and do not reverify them against providers.
+
+Current remote `main` had a failed [Verify run 36542985041](https://github.com/Xuefeng-Zhu/NurseBridge/actions/runs/36542985041): static tests/build passed, but browser tests had an observation race during queued agent playback and a post-unmute audio dropout. The queued-playback assertion now checks both measurements in one snapshot. The dropout did not reproduce locally; its cause remains unproven. CI now retains an allowlisted JSON report containing only test locations/statuses/timing and numeric audio/state diagnostics on failure. Raw reports, screenshots, session cookies, traces and environment files are excluded. Three regression tests verify the sanitizer, and a local browser run produced the expected report. At the time of this local verification, the revised CI workflow and polish changes had not run remotely.
+
+The refreshed 80-second narrated mock walkthrough, editable seven-slide deck, selectable-text PDF and cover use current UI screenshots. These assets describe fictional data and distinguish transcript replay from the earlier local real-provider evidence. `pnpm demo` runs a fresh loopback-only mock runtime without reading provider credentials; it is a rehearsal tool, not a hosted judge URL. Source publication, hosted identity/provider gates, physical devices, real telephone acceptance and the event's signed-in submission form remain outstanding.
+
 ## Normal local app enabled and verified on 2026-09-29
 
 The app at `http://localhost:8787` now runs in live provider mode using ignored local configuration; its health endpoint reports live activation ready. The local-only acceptance exception is enabled on exact loopback origins. Hosted activation checks and recording-control verification flags remain unchanged. The caller screen is ready to start a new call, and the configuration persists across `pnpm dev` restarts.

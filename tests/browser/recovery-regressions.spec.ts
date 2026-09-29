@@ -132,6 +132,7 @@ test('settings cancel discards template changes and each save preserves the othe
   expect((await settings(page)).template).toEqual(initial.template);
 
   await page.getByRole('button', { name: 'Cancel editing' }).click();
+  await page.getByRole('button', { name: 'Discard template changes' }).click();
   await page.getByRole('button', { name: 'Create next version' }).click();
   await expect(page.getByLabel('Template name', { exact: true })).toHaveValue(initial.template.name);
   await expect(page.getByLabel('Approved opening question')).toHaveValue(initial.template.opening);

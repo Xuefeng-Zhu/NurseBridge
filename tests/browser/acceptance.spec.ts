@@ -2,6 +2,7 @@ import { chromium, expect, test, type Browser, type BrowserContext, type Page } 
 import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
+import { attachAudioDiagnostics } from './helpers/audio-diagnostics';
 
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
 const origin = new URL(baseURL).origin;
@@ -134,8 +135,11 @@ test('visible intake preserves evidence and corrections, then relays both distin
     // Trigger an approved question with an audible220Hz mock cue, then interrupt it.
     await caller.page.getByLabel('Caller transcript').fill('I do not take medication.');
     await caller.page.getByRole('button', { name: 'Replay transcript' }).click();
-    await expect.poll(async () => Math.abs(frequency(await diagnostics(caller.page)) - 220)).toBeLessThan(12);
-    expect(Number((await diagnostics(caller.page)).queuedSamples)).toBeGreaterThan(0);
+    await expect.poll(async () => {
+      // Both observations must come from the same render diagnostics window.
+      const current = await diagnostics(caller.page);
+      return Math.abs(frequency(current) - 220) < 12 && Number(current.queuedSamples) > 0;
+    }, { intervals: [50, 100, 100, 100] }).toBe(true);
     await expect(nurse.page.getByRole('button', { name: 'Take over call' })).toBeEnabled();
     await nurse.page.getByRole('button', { name: 'Take over call' }).click();
     await expect.poll(async () => (await snapshot(nurse.page, call.id)).queueState, { timeout: 20_000 }).toBe('CONNECTED');
@@ -173,6 +177,8 @@ test('visible intake preserves evidence and corrections, then relays both distin
     await nurse.page.screenshot({ path: testInfo.outputPath('nurse-mobile.png'), fullPage: true });
     expect(errors).toEqual([]);
   } finally {
+    await attachAudioDiagnostics(caller.page, testInfo, 'caller');
+    await attachAudioDiagnostics(nurse.page, testInfo, 'nurse');
     // Shut down active fake capture/worklet graphs before Chromium's process cleanup.
     for (const participant of [caller, nurse]) {
       await participant.page.evaluate(() => (window as unknown as { __nursebridge?: { close(): void } }).__nursebridge?.close()).catch(() => undefined);

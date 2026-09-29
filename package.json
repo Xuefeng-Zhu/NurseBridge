@@ -11,6 +11,7 @@
     "db:migrate": "pnpm --filter @nursebridge/web exec wrangler d1 migrations apply DB --local --persist-to ../../.local/state",
     "db:seed": "pnpm --filter @nursebridge/web exec wrangler d1 execute DB --local --persist-to ../../.local/state --file ../../packages/database/seed.sql",
     "dev": "node scripts/dev.mjs",
+    "demo": "node scripts/test-phone.mjs --demo",
     "dev:next": "pnpm --filter @nursebridge/web dev",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",

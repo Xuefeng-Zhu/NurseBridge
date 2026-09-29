@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Local signed-protocol QA only. No Twilio account or PSTN connection is used.
+// Isolated local demo and signed-protocol QA. No provider account or PSTN connection is used.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const flags = new Set(process.argv.slice(2).filter(argument => argument !== '--'));
-const allowedFlags = new Set(['--skip-build', '--all', '--help']);
+const allowedFlags = new Set(['--skip-build', '--all', '--demo', '--help']);
 function localPort(name, fallback) {
   const value = process.env[name] ?? String(fallback);
   if (!/^[0-9]+$/.test(value) || Number(value) < 1024 || Number(value) > 65535) {
@@ -239,9 +239,10 @@ async function waitForRuntime(fixture) {
 async function main() {
   for (const flag of flags) if (!allowedFlags.has(flag)) throw new Error(`Unknown option ${flag}. Use --help.`);
   if (flags.has('--help')) {
-    console.log('Usage: PLAYWRIGHT_CHANNEL=chrome node scripts/test-phone.mjs [--skip-build] [--all]\nRuns isolated mock phone QA; --all includes the existing browser suite. Artifacts remain in a private temporary directory.');
+    console.log('Usage: node scripts/test-phone.mjs [--skip-build] [--all | --demo]\nRuns isolated mock phone QA; --all includes the browser suite. --demo keeps the local runtime open for a manual walkthrough with providers off. Artifacts remain in a private temporary directory.');
     return;
   }
+  if (flags.has('--demo') && flags.has('--all')) throw new Error('Choose either --demo or --all.');
   if (process.platform === 'win32') throw new Error('Run this process-group QA harness on macOS, Linux, or WSL.');
   directory = await mkdtemp(join(tmpdir(), 'nursebridge-phone-qa-'));
   await chmod(directory, 0o700);
@@ -271,8 +272,13 @@ async function main() {
   });
   await waitForRuntime(fixture);
   runtimeReady = true;
+  if (flags.has('--demo')) {
+    console.log(`\nLocal demo ready: ${baseURL}/workspace\nCreate a local workspace, then follow the guide. Use a separate browser profile for the caller invitation.\nTranscript replay and synthetic phone emulator only; AssemblyAI, Nebius and real Twilio calls are off.\nThis demo listens on this computer only. Press Ctrl+C to stop; the next run starts with fresh data.`);
+    await runtime.done;
+    return;
+  }
   console.log(`Running ${flags.has('--all') ? 'the mock browser suite, including phone QA' : 'signed phone-protocol browser QA'}…`);
-  await checked('browser', ['exec', 'playwright', 'test', ...(flags.has('--all') ? [] : ['tests/browser/phone.spec.ts']), '--workers=1', '--reporter=list,html', `--output=${join(directory, 'results')}`], {
+  await checked('browser', ['exec', 'playwright', 'test', ...(flags.has('--all') ? [] : ['tests/browser/phone.spec.ts']), '--workers=1', '--reporter=list,html,./tests/reporters/safe-diagnostics.ts', `--output=${join(directory, 'results')}`], {
     timeout: flags.has('--all') ? 1_200_000 : 180_000, echo: true,
     env: { NURSEBRIDGE_LIVE_E2E: '0', NURSEBRIDGE_PHONE_E2E: '1', NURSEBRIDGE_BASE_URL: baseURL, NURSEBRIDGE_PHONE_ORIGIN: phoneOrigin,
       NURSEBRIDGE_PHONE_WORKSPACE_STATE: fixture.storageState, NURSEBRIDGE_PHONE_WORKSPACE_ID: fixture.workspaceId,

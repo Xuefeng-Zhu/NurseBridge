@@ -1,6 +1,7 @@
 import { chromium, expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { resolve } from 'node:path';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
+import { attachAudioDiagnostics } from './helpers/audio-diagnostics';
 
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
 const origin = new URL(baseURL).origin;
@@ -190,6 +191,8 @@ test('reviewing another case during claim and conversation preserves active audi
     expect((await post(nurse.page, `/api/calls/${another.id}/end`)).ok()).toBe(true);
   } finally {
     releaseClaim?.();
+    await attachAudioDiagnostics(caller.page, testInfo, 'caller');
+    await attachAudioDiagnostics(nurse.page, testInfo, 'nurse');
     for (const participant of [caller, nurse]) {
       await participant.context.close();
       await participant.browser.close();

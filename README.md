@@ -36,6 +36,17 @@ The realtime Worker owns the call state machine and audio. The web Worker handle
 
 Use Node **24.14.1** (`.node-version`) and pnpm **11.19.0** (`packageManager`).
 
+For a repeatable walkthrough with fresh data and all external providers disabled:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm demo
+```
+
+Open the printed workspace URL, create a local workspace, then follow the guide. Use another browser profile for the caller invitation. `pnpm demo` builds the app and starts an isolated loopback runtime; it ignores local provider secrets and keeps its temporary data separate from development. Ctrl+C stops it, and the next run starts fresh. For a current build, `pnpm demo --skip-build` skips rebuilding. If ports are occupied, set `NURSEBRIDGE_QA_WEB_PORT=8899 NURSEBRIDGE_QA_REALTIME_PORT=8900`. See the [demo script](docs/demo-script.md) and [submission packet](docs/hackathon-submission.md).
+
+For persistent local development:
+
 ```sh
 pnpm install --frozen-lockfile
 pnpm db:migrate
