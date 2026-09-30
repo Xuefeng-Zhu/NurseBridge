@@ -1,8 +1,8 @@
 import { z } from 'zod';
 export const DISCLOSURE = 'Use sample patient information only. Not for medical care.';
 export const EMERGENCY_COPY = 'This service does not provide emergency care. For an emergency, contact emergency services.';
-export const RECORDING_DISCLOSURE_VERSION = 'voice-agent-recording-v1';
-export const RECORDING_DISCLOSURE = 'Automated intake sends your fictional audio to AssemblyAI, which may record the intake, and uses Nebius to process the conversation. Use fictional information only. You can decline and wait for a nurse.';
+export const RECORDING_DISCLOSURE_VERSION = 'voice-agent-recording-v2';
+export const RECORDING_DISCLOSURE = 'Automated services process your audio and conversation to prepare an intake summary for your care team. Your intake may be recorded. You can decline automated intake and wait for a nurse.';
 export const RoleSchema = z.enum(['admin', 'nurse', 'caller']);
 export type Role = z.infer<typeof RoleSchema>;
 export type Mode = 'mock' | 'live';
@@ -112,6 +112,7 @@ export interface IntakeTemplate {
     createdAt?: number;
 }
 export interface CallSnapshot {
+    workspacePreferences?: WorkspacePreferences;
     version: 2;
     id: string;
     /** Missing on older snapshots; defaults to a browser caller. */
@@ -196,13 +197,33 @@ export type RpcResult<T = Record<string, unknown>> = ({
 export const CommandBodySchema = z.object({ commandId: z.string().uuid(), expectedRevision: z.number().int().nonnegative().optional() }).passthrough();
 export const ExtractionSchema = z.object({ facts: z.array(ProposedFactSchema).max(16), nextQuestionId: FieldSchema.nullable() });
 export type Extraction = z.infer<typeof ExtractionSchema>;
+export const WorkspacePreferencesSchema = z.object({
+    retentionDays: z.number().int().min(1).max(30),
+    escalationDestination: z.string().trim().min(1).max(120),
+    automatedIntake: z.boolean(),
+    recordingAllowed: z.boolean(),
+    phoneEnabled: z.boolean(),
+});
+export type WorkspacePreferences = z.infer<typeof WorkspacePreferencesSchema>;
+export function workspacePreferences(raw: string | Record<string, unknown> = {}): WorkspacePreferences {
+    let value: Record<string, unknown> = {};
+    try { value = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { /* Legacy empty configuration. */ }
+    return WorkspacePreferencesSchema.parse({ retentionDays: 7, escalationDestination: 'Nurse queue', automatedIntake: true, recordingAllowed: true, phoneEnabled: true, ...value });
+}
+export function automatedIntakeAllowed(preferences: WorkspacePreferences, mode: Mode): boolean {
+    return preferences.automatedIntake && (mode === 'mock' || preferences.recordingAllowed);
+}
 export interface DemoSettings {
+    revision: number;
+    preferences: WorkspacePreferences;
+    capabilities: { automatedIntake: boolean; blockers: string[]; phoneNumbers: string[]; phoneAvailable: boolean; checkedAt: number };
+    workspaceExpiresAt: number;
     phoneInbound?: {
         configured: boolean;
         enabled: boolean;
         provider: 'twilio';
     };
-    retentionDays: 7;
+    retentionDays: number;
     recording: {
         provider: 'assemblyai';
         enabled: boolean;

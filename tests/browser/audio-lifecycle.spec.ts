@@ -1,4 +1,4 @@
-import { chromium, expect, test, type Page } from '@playwright/test';
+import { chromium, expect, test, type Page } from './helpers/fixtures';
 import { resolve } from 'node:path';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
 
@@ -35,12 +35,12 @@ async function state(page: Page) {
   return page.evaluate(() => (window as unknown as AudioProbe).__nursebridge.getState());
 }
 
-test('real browser audio resumes, reconnects with one fresh ticket, and releases capture on remote end or deletion', async ({}, testInfo) => {
+test('real browser audio resumes, reconnects with one fresh ticket, and releases capture on remote end or deletion', async ({ extraHTTPHeaders }, testInfo) => {
   const browser = await chromium.launch({
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
     args: ['--disable-crashpad-for-testing', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve('tests/fixtures/microphone-440hz.wav')}`, '--autoplay-policy=no-user-gesture-required'],
   });
-  const context = await browser.newContext({ baseURL, permissions: ['microphone'], reducedMotion: 'reduce' });
+  const context = await browser.newContext({ baseURL, extraHTTPHeaders, permissions: ['microphone'], reducedMotion: 'reduce' });
   const page = await context.newPage();
   const owned = new Set<string>();
   const errors: string[] = [];

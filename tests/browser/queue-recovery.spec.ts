@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './helpers/fixtures';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
 
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
@@ -37,14 +37,15 @@ test('an initial queue failure is distinct from an empty queue and retry restore
   await page.goto(`${baseURL}/nurse`);
   const queue = page.getByRole('region', { name: 'Caller queue' });
   await expect(queue.getByRole('heading', { name: 'Queue unavailable.' })).toBeVisible();
-  await expect(page.locator('.workspace-status')).toContainText('Queue count unavailable');
-  await expect(queue.getByText('Room for a conversation.', { exact: true })).toHaveCount(0);
-  await expect(queue.getByRole('link', { name: 'Start the walkthrough' })).toHaveCount(0);
+  await expect(page.locator('.workspace-status')).toContainText('Queue counts unavailable');
+  await expect(queue.getByText('No callers yet.', { exact: true })).toHaveCount(0);
+  await expect(queue.getByRole('button', { name: 'Create a caller invitation', exact: true })).toHaveCount(0);
   failing = false;
   await queue.getByRole('button', { name: 'Retry queue', exact: true }).click();
-  await expect(queue.getByRole('heading', { name: 'Room for a conversation.' })).toBeVisible();
+  await expect(queue.getByRole('heading', { name: 'No callers yet.' })).toBeVisible();
+  await expect(queue.getByRole('button', { name: 'Create a caller invitation', exact: true })).toBeVisible();
   await expect(queue.getByRole('alert')).toHaveCount(0);
-  await expect(page.locator('.workspace-status')).toContainText('0 callers in queue');
+  await expect(page.locator('.workspace-status')).toContainText('0 waiting · 0 in progress · 0 closed');
 });
 
 test('queue outage preserves cases and reports queue freshness despite new case snapshots', async ({ page }) => {
@@ -60,9 +61,9 @@ test('queue outage preserves cases and reports queue freshness despite new case 
     expect((await post(page, `/api/calls/${call.id}/request-human`)).ok()).toBe(true);
     await expect(page.getByText('A person has been requested', { exact: true })).toBeVisible();
     await expect(page.locator('.workspace-status')).toContainText(/Queue checked (?:[3-9]|\d{2,})s ago/);
-    await expect(page.locator('.workspace-status')).toContainText('1 caller in queue · last known');
+    await expect(page.locator('.workspace-status')).toContainText('1 waiting · 0 in progress · 0 closed · last known');
     await expect(queueItem(page, call)).toBeVisible();
-    await expect(queue.getByText('Room for a conversation.', { exact: true })).toHaveCount(0);
+    await expect(queue.getByText('No callers yet.', { exact: true })).toHaveCount(0);
     await page.unroute(`${baseURL}/api/calls`);
     await queue.getByRole('button', { name: 'Retry queue', exact: true }).click();
     await expect(queue.getByRole('alert')).toHaveCount(0);

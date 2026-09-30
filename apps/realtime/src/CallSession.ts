@@ -1,3 +1,4 @@
+import { workspacePreferences, automatedIntakeAllowed, type WorkspacePreferences } from '@nursebridge/contracts';
 import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
 import { EMERGENCY_COPY, FieldSchema, ProposedFactSchema, type IntakeTemplate, type TranscriptTurn, type RpcResult } from '@nursebridge/contracts';
@@ -7,7 +8,7 @@ import { SessionStore } from './persistence/store';
 import { projectSnapshot } from './persistence/project';
 import { connectVoiceAgent, deleteVoiceAgentSession, type VoiceAgent, type VoiceToolCall } from './providers/voice-agent';
 import { liveActivationIssues } from './providers/readiness';
-import { intakePrompt, INTAKE_TOOLS, explicitRequest } from './intake-agent';
+import { intakePrompt, intakeOpening, intakeAcknowledgment, INTAKE_TOOLS, explicitRequest } from './intake-agent';
 import { extract } from './providers/nebius';
 import { newState, transition, requestHandoff, applyFacts, CommandError, fail, type CallState, type Command, type Role } from './state';
 import type { Env } from './env';
@@ -103,20 +104,28 @@ export class CallSession extends DurableObject<Env>{
  }
 
 
- async initialize(input:{callId:string;workspaceId:string;callerParticipantId:string;template?:IntakeTemplate;mode:'mock'|'live';channel?:'browser'|'phone';createdAt?:number;expiresAt?:number}):Promise<RpcResult>{
+ async initialize(input:{callId:string;workspaceId:string;callerParticipantId:string;template?:IntakeTemplate;mode:'mock'|'live';channel?:'browser'|'phone';createdAt?:number;expiresAt?:number;workspacePreferences?:WorkspacePreferences}):Promise<RpcResult>{
   try{
    if(!/^[a-zA-Z0-9_-]{8,100}$/.test(input.callId)||!input.workspaceId||!input.callerParticipantId)fail(400,'invalid_call','Invalid call initialization.');
    if(this.state){this.scoped(input.workspaceId);if(this.state.callerParticipantId!==input.callerParticipantId)fail(403,'forbidden','Call owner mismatch.');}
-   else{
+   else await this.ctx.blockConcurrencyWhile(async()=>{
+    if(this.state){this.scoped(input.workspaceId);if(this.state.callerParticipantId!==input.callerParticipantId)fail(403,'forbidden','Call owner mismatch.');return;}
     if(input.mode!==this.env.PROVIDER_MODE)fail(400,'mode_mismatch','Requested provider mode does not match the configured worker.');
-    const createdAt=input.createdAt??Date.now();this.state=newState({...input,createdAt,callDeadlineAt:createdAt+Number(this.env.MAX_CALL_SECONDS??600)*1000});this.ctx.storage.transactionSync(()=>this.store.commit(this.state!,'arrived','Caller joined the queue before intake.'));
-   }
+    const createdAt=input.createdAt??Date.now();
+    const workspace=await this.env.DB.prepare('SELECT settings_json FROM workspaces WHERE id=?').bind(input.workspaceId).first<{settings_json:string}>();
+    const preferences=input.channel==='phone'&&input.workspacePreferences?input.workspacePreferences:workspacePreferences(workspace?.settings_json??'{}');
+    const expiresAt=input.expiresAt??createdAt+preferences.retentionDays*86400000;
+    await this.env.DB.prepare('UPDATE workspaces SET expires_at=MAX(expires_at,?) WHERE id=?').bind(expiresAt,input.workspaceId).run();
+    this.state=newState({...input,createdAt,expiresAt,workspacePreferences:preferences,callDeadlineAt:createdAt+Number(this.env.MAX_CALL_SECONDS??600)*1000});
+    if(!automatedIntakeAllowed(preferences,input.mode))requestHandoff(this.state,'human_request','Automated intake is disabled. Waiting for '+preferences.escalationDestination+'.',createdAt);
+    this.ctx.storage.transactionSync(()=>this.store.commit(this.state!,'arrived','Caller joined the queue before intake.'));
+   });
    await this.flushProjection();
    if(!this.state||this.state.projection.revision<1)fail(503,'queue_initializing','Queue entry is still initializing. Retry with the same command ID.');
    await this.scheduleAlarm();return{ok:true,snapshot:this.visibleSnapshot()};
   }catch(error){return errorResult(error);}
  }
- async initializePhone(input:{callId:string;workspaceId:string;callerParticipantId:string;mode:'mock'|'live';template?:IntakeTemplate;provider:'twilio';accountSid:string;providerCallSid:string;streamTokenHash:string;streamTokenExpiresAt:number;createdAt?:number;expiresAt?:number}):Promise<RpcResult>{
+ async initializePhone(input:{callId:string;workspaceId:string;callerParticipantId:string;mode:'mock'|'live';template?:IntakeTemplate;provider:'twilio';accountSid:string;providerCallSid:string;streamTokenHash:string;streamTokenExpiresAt:number;createdAt?:number;expiresAt?:number;workspacePreferences?:WorkspacePreferences}):Promise<RpcResult>{
   try{
    if(input.provider!=='twilio'||!/^AC[0-9a-f]{32}$/i.test(input.accountSid)||!/^CA[0-9a-f]{32}$/i.test(input.providerCallSid)||!/^[0-9a-f]{64}$/.test(input.streamTokenHash)||!Number.isFinite(input.streamTokenExpiresAt))fail(400,'invalid_phone','Invalid phone initialization.');
    const receipt=await this.env.DB.prepare('SELECT terminal_at FROM inbound_calls WHERE provider=? AND account_sid=? AND provider_call_sid=?').bind(input.provider,input.accountSid,input.providerCallSid).first<{terminal_at:number|null}>();
@@ -541,13 +550,13 @@ export class CallSession extends DurableObject<Env>{
   if(!state.askedQuestions.length){
    const field=state.template.questions[0]?.field;if(!field){this.finishCollection();return;}
    this.mutate(s=>{s.intakeState='IN_PROGRESS';markQuestion(s,field);s.aiStatus='listening';},'opening','Automated intake disclosure and opening question.');
-   this.ctx.waitUntil(this.say(state.template.opening));this.publish();
+   this.ctx.waitUntil(this.say(intakeOpening(state.template)));this.publish();
   }
  }
  private startVoiceOpening(){
   if(!this.voice?.ready||!this.state||this.state.conversationOwner!=='AI'||this.openingSession===this.voice.sessionId)return;
   this.openingSession=this.voice.sessionId??undefined;
-  if(!this.voice.requestReply('Introduce yourself as an automated intake assistant, then call get_intake_progress and register_question before asking the first question.'))this.providerFailure('opening_reply_failed');
+  if(!this.voice.requestReply(`Use this effective opening: ${JSON.stringify(intakeOpening(this.state.template))}. Identify yourself as an automated intake assistant, not a nurse. Call get_intake_progress and register_question before asking the included first question exactly once.`))this.providerFailure('opening_reply_failed');
  }
  private providerFailure(code:string){
   if(!this.state||this.state.deleted||this.state.conversationOwner!=='AI')return;
@@ -561,8 +570,10 @@ export class CallSession extends DurableObject<Env>{
  }
  private finishCollection(){
   if(!this.state||this.state.conversationOwner!=='AI')return;
-  this.mutate(s=>{s.waitingReason='intake_complete';s.intakeState='CAPTURED';s.conversationOwner='NONE';s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;s.controlRevision++;delete s.currentQuestion;},'intake-captured','Intake complete — waiting for a nurse.');
-  this.abortAi('intake-complete',false);this.stopProvider();this.broadcast({type:'agent-text',text:'Intake complete — waiting for a nurse.'});this.publish();
+  const acknowledgment=intakeAcknowledgment(this.state.template,this.state.turns.length,true);
+  const text=[acknowledgment,'Intake complete — waiting for a nurse.'].filter(Boolean).join(' ');
+  this.mutate(s=>{s.waitingReason='intake_complete';s.intakeState='CAPTURED';s.conversationOwner='NONE';s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;s.controlRevision++;delete s.currentQuestion;s.assistantTurns.push({id:crypto.randomUUID(),sessionId:'server',replyId:'intake-complete',text,final:true,interrupted:false,at:Date.now()});},'intake-captured','Intake complete — waiting for a nurse.');
+  this.abortAi('intake-complete',false);this.stopProvider();this.broadcast({type:'agent-text',text});this.publish();
  }
  private enqueueVoiceAudio(pcm:Uint8Array,replyId:string){
   const reply=this.voiceReplies.get(replyId);if(!reply||!this.current(reply.epoch,reply.generation))return;
@@ -619,7 +630,7 @@ export class CallSession extends DurableObject<Env>{
   let result:unknown;
   try{
    const next=structuredClone(this.state);const action=assessCollection(next);
-   if(call.name==='get_intake_progress'){z.object({}).strict().parse(call.arguments);result={action,collection:next.collection,callerEvidence:next.turns.slice(-4).map(t=>({turnId:t.id,text:t.text.slice(0,2000)}))};}
+   if(call.name==='get_intake_progress'){z.object({}).strict().parse(call.arguments);result={action,acknowledgment:intakeAcknowledgment(next.template,next.turns.length,action.type==='complete'),collection:next.collection,callerEvidence:next.turns.slice(-4).map(t=>({turnId:t.id,text:t.text.slice(0,2000)}))};}
    else if(call.name==='register_question'){
     const args=z.object({field:FieldSchema}).strict().parse(call.arguments);
     if(action.type!=='question'||action.field!==args.field)throw new Error('Question is not currently eligible');markQuestion(next,args.field);result={ok:true,field:args.field,text:action.text};
@@ -652,7 +663,7 @@ export class CallSession extends DurableObject<Env>{
   const epoch=this.state.controlEpoch;const generation=this.state.responseGeneration;const startedAt=Date.now();
   const source=structuredClone(this.state);const extractionAbort=new AbortController();this.extractionAbort=extractionAbort;
   try{
-   const output=source.mode==='mock'?mockExtraction(source.turns.at(-1)!,source.currentQuestion):await extract({apiKey:this.env.NEBIUS_API_KEY??'',model:this.env.EXTRACTION_MODEL,signal:extractionAbort.signal,validate:candidate=>validateExtraction(candidate,source.turns,source.template)},{allowedFields:source.template.questions.map(q=>q.field),allowedQuestions:source.template.questions.map(q=>({id:q.id,field:q.field})),turns:source.turns.slice(-20),currentFacts:source.facts});
+   const output=source.mode==='mock'?mockExtraction(source.turns.at(-1)!,source.currentQuestion,source.template):await extract({apiKey:this.env.NEBIUS_API_KEY??'',model:this.env.EXTRACTION_MODEL,signal:extractionAbort.signal,validate:candidate=>validateExtraction(candidate,source.turns,source.template)},{allowedFields:source.template.questions.map(q=>q.field),allowedQuestions:source.template.questions.map(q=>({id:q.id,field:q.field})),turns:source.turns.slice(-20),currentFacts:source.facts});
    const checked=validateExtraction(output,source.turns,source.template);
    if(!this.current(epoch,generation))return;
    this.mutate(s=>{applyFacts(s,checked.facts,Date.now());s.providerSession.lastFinalizedTurnId=source.turns.at(-1)?.id;s.timings={...s.timings,extractionMs:Date.now()-startedAt};},'draft-revised','Evidence-linked intake draft updated; nurse review remains required.');
@@ -666,7 +677,7 @@ export class CallSession extends DurableObject<Env>{
   if(action.type==='handoff'){this.waitForNurse('unresolved_answer',`The ${action.field} answer remains unresolved after one clarification.`);return;}
   if(action.type==='complete'){this.finishCollection();return;}
   if(this.state!.mode==='mock'){
-   const question=action;const result=await this.handleVoiceTool({sessionId:this.state!.providerSession.id!,replyId:'fixture-tool',callId:crypto.randomUUID(),name:'register_question',arguments:{field:question.field}},true) as {ok?:boolean};if(!this.current(epoch,generation))return;if(!result?.ok){this.providerFailure('fixture_tool_failed');return;}this.ctx.waitUntil(this.say(question.text));
+   const question=action;const result=await this.handleVoiceTool({sessionId:this.state!.providerSession.id!,replyId:'fixture-tool',callId:crypto.randomUUID(),name:'register_question',arguments:{field:question.field}},true) as {ok?:boolean};if(!this.current(epoch,generation))return;if(!result?.ok){this.providerFailure('fixture_tool_failed');return;}const acknowledgment=intakeAcknowledgment(this.state!.template,this.state!.turns.length);this.ctx.waitUntil(this.say([acknowledgment,question.text].filter(Boolean).join(' ')));
   }
   this.publish();
  }

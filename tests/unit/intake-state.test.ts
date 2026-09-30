@@ -28,7 +28,7 @@ describe('versioned collection control', () => {
         expect(fixture.recordingConsent).toBeUndefined();
         const live = state('live');
         expect(() => transition(live, consent({ accepted: true }), 200)).toThrow('recording disclosure');
-        expect(() => transition(live, consent({ accepted: true, recordingAccepted: true, recordingDisclosureVersion: 'outdated' }), 200)).toThrow('recording disclosure');
+        expect(() => transition(live, consent({ accepted: true, recordingAccepted: true, recordingDisclosureVersion: 'voice-agent-recording-v1' }), 200)).toThrow('recording disclosure');
         expect(live.consent).toBe(false);
         transition(live, consent({ accepted: true, recordingAccepted: true, recordingDisclosureVersion: RECORDING_DISCLOSURE_VERSION }), 250);
         expect(live.recordingConsent).toEqual({ disclosureVersion: RECORDING_DISCLOSURE_VERSION, acceptedAt: 250 });

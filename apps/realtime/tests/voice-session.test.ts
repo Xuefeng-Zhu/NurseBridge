@@ -1,7 +1,7 @@
 import { env, exports } from 'cloudflare:workers';
 import { evictDurableObject, reset, runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CallCommand, CallSnapshot, TranscriptTurn } from '@nursebridge/contracts';
+import type { CallCommand, CallSnapshot, IntakeTemplate, TranscriptTurn } from '@nursebridge/contracts';
 import { AudioStreamKind } from '@nursebridge/audio-client/protocol';
 import type { Env } from '../src/env';
 import type { CallState } from '../src/state';
@@ -34,10 +34,10 @@ type Internal = {
 beforeEach(async () => { await bindings.DB.exec(schema); });
 afterEach(async () => { vi.restoreAllMocks(); await reset(); });
 
-async function create() {
+async function create(template?: IntakeTemplate) {
   const callId = crypto.randomUUID();
   const stub = bindings.CALL_SESSIONS.getByName(callId);
-  expect(await stub.initialize({ callId, workspaceId: 'voice-workspace', callerParticipantId: 'voice-caller', mode: 'mock' })).toMatchObject({ ok: true });
+  expect(await stub.initialize({ callId, workspaceId: 'voice-workspace', callerParticipantId: 'voice-caller', mode: 'mock', template })).toMatchObject({ ok: true });
   return { callId, stub };
 }
 const command = (type: string, payload?: Record<string, unknown>): CallCommand => ({
@@ -88,6 +88,53 @@ function tool(name: string, args: Record<string, unknown> = {}, callId = crypto.
 const callerTurn = (id = 'provider-session:item-one'): TranscriptTurn => ({ id, sessionId: 'provider-session', providerItemId: 'item-one', order: 0, text: 'It started yesterday.', final: true, at: Date.now(), timingAvailability: 'unavailable' });
 
 describe('Voice Agent collection and waiting in the Durable Object', () => {
+  it('uses edited opening, acknowledgment, and question order and completes only the selected fields', async () => {
+    const template: IntakeTemplate = {
+      id: 'custom-intake', version: 4, name: 'Custom intake', opening: 'Welcome to the configured sample intake.',
+      acknowledgments: ['I captured your answer.', 'Thank you for that detail.', 'The selected questions are captured.'],
+      questions: [
+        { id: 'symptoms', field: 'symptoms', text: 'What other concerns should we note?' },
+        { id: 'callback', field: 'callback', text: 'Which sample callback number should we note?' },
+        { id: 'onset', field: 'onset', text: 'What day did this begin?' },
+      ],
+    };
+    const { stub } = await create(template);
+    await stub.command(command('consent', { accepted: true }));
+    await runInDurableObject(stub, async instance => {
+      const internal = instance as unknown as Internal;
+      internal.state.mediaReady.caller = true;
+      await internal.startIntake();
+    });
+    const opened = await snapshot(stub);
+    expect(opened.currentQuestion).toBe('symptoms');
+    expect(opened.assistantTurns.at(-1)?.text).toBe('Welcome to the configured sample intake. What other concerns should we note?');
+    await fixture(stub, 'No other concerns.');
+    const callback = await settled(stub, value => value.currentQuestion === 'callback');
+    expect(callback.assistantTurns.at(-1)?.text).toBe('I captured your answer. Which sample callback number should we note?');
+    await fixture(stub, 'My sample callback is 555-0100. I took a tablet.');
+    const onset = await settled(stub, value => value.currentQuestion === 'onset');
+    expect(onset.assistantTurns.at(-1)?.text).toBe('Thank you for that detail. What day did this begin?');
+    expect(onset.facts.some(fact => fact.field === 'medications')).toBe(false);
+    await fixture(stub, 'Last Friday.');
+    const finished = await settled(stub, value => value.waitingReason === 'intake_complete');
+    expect(finished.askedQuestions).toEqual(['symptoms', 'callback', 'onset']);
+    expect(finished.facts.map(fact => fact.field)).toEqual(['symptoms', 'callback', 'onset']);
+    expect(finished.collection.reason.status).toBe('unasked');
+    expect(finished.assistantTurns.at(-1)?.text).toBe('The selected questions are captured. Intake complete — waiting for a nurse.');
+    expect(finished).toMatchObject({ template, intakeState: 'CAPTURED', conversationOwner: 'NONE' });
+  });
+
+  it('keeps existing call templates pinned through initialization retries and eviction', async () => {
+    const original: IntakeTemplate = { id: 'custom-intake', version: 2, name: 'Original template', opening: 'Original opening.', acknowledgments: ['Original thanks.'], questions: [{ id: 'callback', field: 'callback', text: 'Original callback question?' }] };
+    const { stub, callId } = await create(original);
+    const updated: IntakeTemplate = { ...original, version: 3, opening: 'Updated opening.', questions: [{ id: 'onset', field: 'onset', text: 'Updated onset question?' }] };
+    expect(await stub.initialize({ callId, workspaceId: 'voice-workspace', callerParticipantId: 'voice-caller', mode: 'mock', template: updated })).toMatchObject({ ok: true, snapshot: { template: original } });
+    await evictDurableObject(stub);
+    expect((await snapshot(stub)).template).toEqual(original);
+    const next = await create(updated);
+    expect((await snapshot(next.stub)).template).toEqual(updated);
+  });
+
   it('clarifies an unknown answer once, then hands off without losing arrival or evidence', async () => {
     const { stub } = await create();
     const arrived = await snapshot(stub);
@@ -191,6 +238,23 @@ describe('Voice Agent collection and waiting in the Durable Object', () => {
 });
 
 describe('Durable Voice Agent tool authority', () => {
+  it('returns approved wording and rejects removed or out-of-order questions from a custom template', async () => {
+    const template: IntakeTemplate = { id: 'custom-intake', version: 2, name: 'Custom template', opening: 'Custom opening.', acknowledgments: ['Custom thanks.'], questions: [{ id: 'callback', field: 'callback', text: 'Custom callback question?' }, { id: 'onset', field: 'onset', text: 'Custom onset question?' }] };
+    const { stub } = await create(template);
+    await stub.command(command('consent', { accepted: true }));
+    await runInDurableObject(stub, async instance => {
+      const internal = instance as unknown as Internal;
+      internal.state.providerSession = { status: 'active', id: 'provider-session' };
+      expect(await internal.handleVoiceTool(tool('get_intake_progress'))).toMatchObject({ action: { type: 'question', field: 'callback', text: 'Custom callback question?' }, acknowledgment: '' });
+      expect(await internal.handleVoiceTool(tool('register_question', { field: 'reason' }))).toMatchObject({ error: 'invalid_intake_action' });
+      expect(await internal.handleVoiceTool(tool('register_question', { field: 'onset' }))).toMatchObject({ error: 'invalid_intake_action' });
+      expect(await internal.handleVoiceTool(tool('register_question', { field: 'callback' }))).toEqual({ ok: true, field: 'callback', text: 'Custom callback question?' });
+      internal.state.turns = [callerTurn('No other details.')];
+      internal.state.providerSession.lastFinalizedTurnId = internal.state.turns[0]!.id;
+      expect(await internal.handleVoiceTool(tool('get_intake_progress'))).toMatchObject({ acknowledgment: 'Custom thanks.' });
+    });
+  });
+
   it('registers a question once across retries and rejects changed reuse of its tool ID', async () => {
     const { stub } = await create();
     await stub.command(command('consent', { accepted: true }));

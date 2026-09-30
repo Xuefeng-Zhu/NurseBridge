@@ -1,4 +1,4 @@
-import { chromium, expect, test, type Page } from '@playwright/test';
+import { chromium, expect, test, type Page } from './helpers/fixtures';
 import { resolve } from 'node:path';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
 import { attachAudioDiagnostics } from './helpers/audio-diagnostics';

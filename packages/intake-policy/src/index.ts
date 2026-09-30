@@ -95,8 +95,9 @@ export function assessCollection(state: CollectionState): CollectionAction {
         || (state.askedQuestions.includes(question.id) && finalized > (progress.askedAfterTurnCount ?? finalized));
     return { type: 'question', field: question.field, text: isClarification ? `I could not resolve that detail. ${question.text}` : question.text };
 }
-export function mockExtraction(turn: TranscriptTurn, questionId?: string): Extraction {
+export function mockExtraction(turn: TranscriptTurn, questionId?: string, template: IntakeTemplate = DEFAULT_TEMPLATE): Extraction {
     const facts: Extraction['facts'] = [];
+    const allowedFields = new Set(template.questions.map(question => question.field));
     for (const sentence of turn.text.match(/[^.!?]+[.!?]?/g) ?? [turn.text]) {
         const text = sentence.trim();
         if (!text)
@@ -117,10 +118,13 @@ export function mockExtraction(turn: TranscriptTurn, questionId?: string): Extra
             fields.add('severity');
         if (/555|callback/.test(low))
             fields.add('callback');
-        if (!fields.size)
-            fields.add(DEFAULT_TEMPLATE.questions.find(q => q.id === questionId)?.field ?? 'reason');
+        if (!fields.size) {
+            const fallback = template.questions.find(q => q.id === questionId)?.field ?? template.questions[0]?.field;
+            if (fallback) fields.add(fallback);
+        }
         const status = /(not|haven.t|never|have not).{0,20}(checked|measured)/.test(low) ? 'not_measured' : /not sure|unsure|maybe|might/.test(low) ? 'uncertain' : /don.t know|do not know/.test(low) ? 'unknown' : /^no\b|do not have|don.t have/.test(low) ? 'denied' : 'reported';
         for (const field of fields) {
+            if (!allowedFields.has(field)) continue;
             const fieldStatus = status === 'reported' && field === 'medications' && /\bi (?:do not|don['’]t) take\s+(?:any\s+)?(?:medications?|tablets?|tylenol|ibuprofen|acetaminophen)\b/.test(low) ? 'denied' : status;
             const reason = text.match(/(?:calling (?:about|because)|have)\s+(.+?)(?:\s+that started|\s+which started|\s+started|[.!?]|$)/i)?.[1];
             facts.push({ field, value: field === 'reason' && reason ? reason : text, rawWording: text, status: fieldStatus, evidence: [{ turnId: turn.id, quote: text }] });

@@ -1,3 +1,4 @@
+import { automatedIntakeAllowed, type WorkspacePreferences } from '@nursebridge/contracts';
 import { RECORDING_DISCLOSURE_VERSION, type CallSnapshot, type CallCommand, type IntakeTemplate, type ProposedFact, type IntakeFact, type EscalationReason } from '@nursebridge/contracts';
 import { DEFAULT_TEMPLATE, validateExtraction, nextQuestion as selectQuestion, createCollection, assessCollection } from '@nursebridge/intake-policy';
 export type Role = 'caller' | 'nurse' | 'observer' | 'admin';
@@ -14,9 +15,9 @@ export type Command = CallCommand;
 export class CommandError extends Error { constructor(public status:number,public code:string,message:string){super(message);} }
 export const fail=(status:number,code:string,message:string):never=>{throw new CommandError(status,code,message);};
 export const defaultTemplate=DEFAULT_TEMPLATE;
-export function newState(input:{callId:string;workspaceId:string;callerParticipantId:string;mode:'mock'|'live';channel?:'browser'|'phone';template?:IntakeTemplate;createdAt?:number;expiresAt?:number;callDeadlineAt?:number}):CallState{
+export function newState(input:{callId:string;workspaceId:string;callerParticipantId:string;mode:'mock'|'live';channel?:'browser'|'phone';template?:IntakeTemplate;createdAt?:number;expiresAt?:number;callDeadlineAt?:number;workspacePreferences?:WorkspacePreferences}):CallState{
  const now=input.createdAt??Date.now();
- return {version:2,id:input.callId,channel:input.channel??'browser',workspaceId:input.workspaceId,callerParticipantId:input.callerParticipantId,mode:input.mode,createdAt:now,expiresAt:input.expiresAt??now+7*86400000,callDeadlineAt:input.callDeadlineAt??now+600000,revision:0,controlRevision:0,controlEpoch:1,responseGeneration:1,consent:false,queueState:'WAITING',intakeState:'NOT_STARTED',conversationOwner:'NONE',aiStatus:'idle',humanRequested:false,nurseReviewStatus:'pending',template:input.template??DEFAULT_TEMPLATE,askedQuestions:[],turns:[],assistantTurns:[],collection:createCollection(),providerSession:{status:'idle'},facts:[],factRevisions:[],timeline:[],escalations:[],participants:{caller:false,nurse:false},mediaReady:{caller:false,nurse:false},provider:{connected:false,sessionId:null,medicalMode:'unavailable',warning:null,reconnects:0},projection:{revision:0,updatedAt:now},warnings:[],timings:{}};
+ return {workspacePreferences:input.workspacePreferences,version:2,id:input.callId,channel:input.channel??'browser',workspaceId:input.workspaceId,callerParticipantId:input.callerParticipantId,mode:input.mode,createdAt:now,expiresAt:input.expiresAt??now+7*86400000,callDeadlineAt:input.callDeadlineAt??now+600000,revision:0,controlRevision:0,controlEpoch:1,responseGeneration:1,consent:false,queueState:'WAITING',intakeState:'NOT_STARTED',conversationOwner:'NONE',aiStatus:'idle',humanRequested:false,nurseReviewStatus:'pending',template:input.template??DEFAULT_TEMPLATE,askedQuestions:[],turns:[],assistantTurns:[],collection:createCollection(),providerSession:{status:'idle'},facts:[],factRevisions:[],timeline:[],escalations:[],participants:{caller:false,nurse:false},mediaReady:{caller:false,nurse:false},provider:{connected:false,sessionId:null,medicalMode:'unavailable',warning:null,reconnects:0},projection:{revision:0,updatedAt:now},warnings:[],timings:{}};
 }
 /** Upgrade durable control data without treating legacy transcription consent as
  * permission for provider recording or switching an active old audio pipeline. */
@@ -88,6 +89,7 @@ export function transition(state:CallState,command:Command,now:number){
    if(!caller)fail(403,'forbidden','Only the caller can consent.');
    if(['NURSE','HANDOFF_PENDING'].includes(state.conversationOwner))fail(409,'human_owned','Human access is in progress.');
    const accepted=command.payload?.accepted===true;
+   if(accepted&&state.workspacePreferences&&!automatedIntakeAllowed(state.workspacePreferences,state.mode))fail(409,'intake_disabled','Automated intake is disabled for this call. Request a nurse.');
    if(accepted&&state.legacyIntakeBlocked)fail(409,'legacy_session','This existing call must finish with a nurse before switching voice providers.');
    if(accepted&&state.waitingReason)fail(409,'intake_stopped','Automated intake has ended. Continue waiting for a nurse.');
    if(accepted&&state.mode==='live'){

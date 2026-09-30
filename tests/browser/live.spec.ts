@@ -1,4 +1,4 @@
-import { chromium, expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { chromium, expect, test, type Browser, type BrowserContext, type Page } from './helpers/fixtures';
 import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
@@ -8,7 +8,7 @@ const origin = new URL(baseURL).origin;
 
 test.skip(process.env.NURSEBRIDGE_LIVE_E2E !== '1', 'Requires explicit fictional live-provider opt-in and local Workers in live mode.');
 
-async function participant(fixture: string): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
+async function participant(fixture: string, extraHTTPHeaders?: Record<string, string>): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
@@ -20,7 +20,7 @@ async function participant(fixture: string): Promise<{ browser: Browser; context
     ],
   });
   try {
-    const context = await browser.newContext({ baseURL, permissions: ['microphone'] });
+    const context = await browser.newContext({ baseURL, extraHTTPHeaders, permissions: ['microphone'] });
     return { browser, context, page: await context.newPage() };
   } catch (error) {
     await browser.close();
@@ -131,15 +131,15 @@ async function waitForLiveMilestone(page: Page, callId: string, name: string, pr
   throw new Error(`${name} did not arrive within ${timeoutMs} ms`);
 }
 
-test('fictional speech reaches AssemblyAI and Nebius before two-way nurse takeover', async ({}, testInfo) => {
+test('fictional speech reaches AssemblyAI and Nebius before two-way nurse takeover', async ({ extraHTTPHeaders }, testInfo) => {
   test.setTimeout(180_000);
   expect(new URL(baseURL).protocol, 'Live audio acceptance must remain local').toBe('http:');
   expect(['localhost', '127.0.0.1', '[::1]']).toContain(new URL(baseURL).hostname);
   const startedAt = Date.now();
-  const caller = await participant('fictional-caller-speech.wav');
+  const caller = await participant('fictional-caller-speech.wav', extraHTTPHeaders);
   let nurse: Awaited<ReturnType<typeof participant>>;
   try {
-    nurse = await participant('microphone-660hz.wav');
+    nurse = await participant('microphone-660hz.wav', extraHTTPHeaders);
   } catch (error) {
     await caller.browser.close();
     throw error;
@@ -154,10 +154,11 @@ test('fictional speech reaches AssemblyAI and Nebius before two-way nurse takeov
     await nurse.page.goto('/workspace');
     await expect(nurse.page).toHaveTitle('NurseBridge · The intake workspace');
     await nurse.page.getByRole('button', { name: 'Create local workspace' }).click();
-    await expect(nurse.page.getByText('Your isolated workspace is ready')).toBeVisible();
+    await expect(nurse.page.getByRole('heading', { name: 'Call queue', exact: true })).toBeVisible();
     const session = await (await nurse.page.request.get(`${baseURL}/api/demo/session`)).json() as { mode: string; diagnostics: boolean };
     expect(session.mode).toBe('live');
     expect(session.diagnostics).toBe(true);
+    await nurse.page.getByRole('button', { name: 'Invite a caller', exact: true }).click();
     await nurse.page.getByRole('button', { name: 'Create caller invitation' }).click();
     const invitation = nurse.page.locator('.invitation-result a');
     await expect(invitation).toBeVisible();

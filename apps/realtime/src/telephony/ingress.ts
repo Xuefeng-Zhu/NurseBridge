@@ -1,6 +1,7 @@
+import { workspacePreferences, automatedIntakeAllowed, type WorkspacePreferences } from '@nursebridge/contracts';
 import { DISCLOSURE, RECORDING_DISCLOSURE, RECORDING_DISCLOSURE_VERSION, type IntakeTemplate, type RpcResult } from '@nursebridge/contracts';
 import { DEFAULT_TEMPLATE } from '@nursebridge/intake-policy';
-import { CALL_DURATION_MS, RETENTION_MS } from '@nursebridge/database';
+import { CALL_DURATION_MS } from '@nursebridge/database';
 import type { Env } from '../env';
 import { liveActivationIssues } from '../providers/readiness';
 import { authenticateTwilio, PhoneRequestError, PHONE_NUMBER, phoneHash, phoneStreamToken, publicPhoneOrigin, releasePhoneReservation } from './twilio';
@@ -18,7 +19,7 @@ type Receipt = {
 };
 type Admitted = Receipt & { call_id: string; workspace_id: string; caller_participant_id: string; template_json: string; expires_at: number; deadline_at: number; stream_token_expires_at: number };
 type PhoneRpc = {
-  initializePhone(input: { callId: string; workspaceId: string; callerParticipantId: string; mode: 'mock' | 'live'; template: IntakeTemplate; provider: 'twilio'; accountSid: string; providerCallSid: string; streamTokenHash: string; streamTokenExpiresAt: number; createdAt: number; expiresAt: number }): Promise<RpcResult>;
+  initializePhone(input: { callId: string; workspaceId: string; callerParticipantId: string; mode: 'mock' | 'live'; template: IntakeTemplate; provider: 'twilio'; accountSid: string; providerCallSid: string; streamTokenHash: string; streamTokenExpiresAt: number; createdAt: number; expiresAt: number; workspacePreferences: WorkspacePreferences }): Promise<RpcResult>;
   phoneConsent(input: { workspaceId: string; providerCallSid: string; commandId: string; decision: Decision; recordingAccepted?: boolean; disclosureVersion?: string }): Promise<RpcResult>;
   phoneStatus(input: { workspaceId: string; providerCallSid: string; status: string; eventId?: string }): Promise<RpcResult>;
   fetch(request: Request): Promise<Response>;
@@ -60,14 +61,17 @@ async function admit(env: Env, form: URLSearchParams): Promise<Receipt> {
   const workspaceId = routes(env)[destination];
   if (!workspaceId) throw new PhoneRequestError(404, 'No inbound call route is available.');
   const now = Date.now();
-  const workspace = await env.DB.prepare('SELECT expires_at FROM workspaces WHERE id=? AND expires_at>?').bind(workspaceId, now).first<{ expires_at: number }>();
+  const workspace = await env.DB.prepare('SELECT expires_at,settings_json FROM workspaces WHERE id=? AND expires_at>?').bind(workspaceId, now).first<{ expires_at: number; settings_json: string }>();
   if (!workspace) throw new PhoneRequestError(410, 'The routed workspace has expired.');
+  const preferences = workspacePreferences(workspace.settings_json);
+  if (!preferences.phoneEnabled) throw new PhoneRequestError(403, 'Inbound phone calls are disabled for this workspace.');
   const current = await env.DB.prepare('SELECT body_json FROM template_versions WHERE workspace_id=? ORDER BY version DESC LIMIT 1').bind(workspaceId).first<{ body_json: string }>();
-  const templateJson = current?.body_json ?? JSON.stringify(DEFAULT_TEMPLATE);
+  const templateJson = JSON.stringify({ ...JSON.parse(current?.body_json ?? JSON.stringify(DEFAULT_TEMPLATE)), workspacePreferences: preferences });
   const callId = crypto.randomUUID(), participantId = crypto.randomUUID();
   const duration = integer(env.MAX_CALL_SECONDS, 600, 600) * 1000;
   const deadline = Math.min(now + duration, workspace.expires_at);
-  const expires = Math.min(now + RETENTION_MS, workspace.expires_at);
+  const expires = now + preferences.retentionDays * 86400000;
+  await env.DB.prepare('UPDATE workspaces SET expires_at=MAX(expires_at,?) WHERE id=?').bind(expires, workspaceId).run();
   const minutes = Math.ceil(duration / 60_000), day = new Date(now).toISOString().slice(0, 10);
   const account = env.TWILIO_ACCOUNT_SID!;
   // D1 batch is transactional: this reservation and the shared browser admission
@@ -94,9 +98,12 @@ async function admit(env: Env, form: URLSearchParams): Promise<Receipt> {
 
 async function initialize(env: Env, row: Admitted): Promise<string> {
   const token = await phoneStreamToken(env, { callId: row.call_id, workspaceId: row.workspace_id, participantId: row.caller_participant_id, providerCallSid: row.provider_call_sid });
-  checked(await object(env, row.call_id).initializePhone({ callId: row.call_id, workspaceId: row.workspace_id, callerParticipantId: row.caller_participant_id, mode: env.PROVIDER_MODE, template: JSON.parse(row.template_json) as IntakeTemplate, provider: 'twilio', accountSid: row.account_sid, providerCallSid: row.provider_call_sid, streamTokenHash: await phoneHash(token), streamTokenExpiresAt: row.stream_token_expires_at, createdAt: row.created_at, expiresAt: row.expires_at }));
+  checked(await object(env, row.call_id).initializePhone({ callId: row.call_id, workspaceId: row.workspace_id, callerParticipantId: row.caller_participant_id, mode: env.PROVIDER_MODE, workspacePreferences: phonePreferences(row), template: JSON.parse(row.template_json) as IntakeTemplate, provider: 'twilio', accountSid: row.account_sid, providerCallSid: row.provider_call_sid, streamTokenHash: await phoneHash(token), streamTokenExpiresAt: row.stream_token_expires_at, createdAt: row.created_at, expiresAt: row.expires_at }));
   return token;
 }
+
+function phonePreferences(row: Admitted): WorkspacePreferences { return workspacePreferences(JSON.parse(row.template_json).workspacePreferences ?? {}); }
+function phoneAiReady(env: Env, row: Admitted) { return aiReady(env) && automatedIntakeAllowed(phonePreferences(row), env.PROVIDER_MODE); }
 
 async function reserveAi(env: Env, row: Admitted): Promise<boolean> {
   const now = Date.now(), day = new Date(now).toISOString().slice(0, 10);
@@ -111,7 +118,7 @@ async function reserveAi(env: Env, row: Admitted): Promise<boolean> {
 async function decide(env: Env, row: Admitted, wanted: Decision): Promise<Admitted> {
   let decision = row.consent_decision;
   if (!decision) {
-    decision = wanted === 'accepted' && (!aiReady(env) || !await reserveAi(env, row)) ? 'unavailable' : wanted;
+    decision = wanted === 'accepted' && (!phoneAiReady(env, row) || !await reserveAi(env, row)) ? 'unavailable' : wanted;
     await env.DB.prepare("UPDATE inbound_calls SET consent_decision=COALESCE(consent_decision,?) WHERE provider='twilio' AND account_sid=? AND provider_call_sid=? AND terminal_at IS NULL").bind(decision, row.account_sid, row.provider_call_sid).run();
     const current = await receipt(env, row.provider_call_sid);
     if (!admitted(current) || current.terminal_at !== null) throw new PhoneRequestError(410, 'This phone call has ended.');
@@ -127,7 +134,7 @@ function stream(env: Env, row: Admitted, token: string, decision: Decision): Res
   const origin = publicPhoneOrigin(env);
   const socketOrigin = origin.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
   const words = decision === 'accepted' ? 'Automated intake will begin. Press zero at any time to request a person.' : decision === 'declined' ? 'Automated intake is off. Your request is in the nurse queue. Press zero to request a person. This service does not assess whether waiting is safe.' : 'Automated intake is unavailable. You are in the nurse queue for a human conversation. Press zero to request a person. This service does not assess whether waiting is safe.';
-  return twiml(`<Say>${xml(`${DISCLOSURE} ${words}`)}</Say><Connect><Stream url="${xml(`${socketOrigin}/phone/connect/${row.call_id}`)}"><Parameter name="token" value="${xml(token)}"/></Stream></Connect><Hangup/>`);
+  return twiml(`<Say>${xml(`${DISCLOSURE} ${words} Human-request destination: ${phonePreferences(row).escalationDestination}.`)}</Say><Connect><Stream url="${xml(`${socketOrigin}/phone/connect/${row.call_id}`)}"><Parameter name="token" value="${xml(token)}"/></Stream></Connect><Hangup/>`);
 }
 
 async function terminalStatus(env: Env, form: URLSearchParams): Promise<Response> {
@@ -165,7 +172,7 @@ async function voice(env: Env, form: URLSearchParams, consent: boolean): Promise
   const latest = await receipt(env, row.provider_call_sid);
   if (!admitted(latest)) return hangup();
   if (latest.terminal_at !== null) { checked(await object(env, latest.call_id).phoneStatus({ workspaceId: latest.workspace_id, providerCallSid: latest.provider_call_sid, status: TERMINAL.has(latest.status) ? latest.status : 'completed' })); return hangup(); }
-  if (consent || latest.consent_decision || !aiReady(env)) {
+  if (consent || latest.consent_decision || !phoneAiReady(env, latest)) {
     const wanted: Decision = consent ? form.get('Digits') === '1' ? 'accepted' : 'declined' : 'unavailable';
     const decided = await decide(env, latest, wanted);
     return stream(env, decided, token, decided.consent_decision!);

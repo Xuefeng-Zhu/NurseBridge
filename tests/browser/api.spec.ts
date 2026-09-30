@@ -1,8 +1,9 @@
-import {test,expect,request as apiRequest} from '@playwright/test';
+import {test,expect,request as apiRequest} from './helpers/fixtures';
+import { RECORDING_DISCLOSURE_VERSION } from '../../packages/contracts/src';
 const baseURL=process.env.NURSEBRIDGE_BASE_URL??'http://localhost:8787';
-test('Workers HTTP preserves template versions, private exports, and terminal deletion',async()=>{
- const admin=await apiRequest.newContext({baseURL,extraHTTPHeaders:{Origin:baseURL}});
- const stranger=await apiRequest.newContext({baseURL,extraHTTPHeaders:{Origin:baseURL}});
+test('Workers HTTP preserves template versions, private exports, and terminal deletion',async({extraHTTPHeaders})=>{
+ const admin=await apiRequest.newContext({baseURL,extraHTTPHeaders:{...extraHTTPHeaders,Origin:baseURL}});
+ const stranger=await apiRequest.newContext({baseURL,extraHTTPHeaders:{...extraHTTPHeaders,Origin:baseURL}});
  try{
   expect((await admin.post('/api/demo/session',{data:{}})).status()).toBe(201);
   expect((await stranger.post('/api/demo/session',{data:{}})).status()).toBe(201);
@@ -15,7 +16,7 @@ test('Workers HTTP preserves template versions, private exports, and terminal de
    expect(invalid.status()).toBe(400);
    expect((await(await admin.get(`/api/calls/${call.id}`)).json()).snapshot).toMatchObject({facts:[],factRevisions:[],controlRevision:call.controlRevision});
   }
-  const initialSettings=await(await admin.get('/api/settings')).json();expect(initialSettings.recording).toMatchObject({provider:'assemblyai',enabled:false,disclosureVersion:'voice-agent-recording-v1',retentionVerified:false,deletionVerified:false});expect(initialSettings.providers).toHaveProperty('voiceAgent');expect(initialSettings.providers).not.toHaveProperty('tts');const updated=await admin.patch('/api/settings',{data:{template:{...initialSettings.template,name:'Second fictional template'},escalationDestination:'Synthetic staff destination'}});expect(updated.status()).toBe(200);expect((await updated.json()).template.version).toBe(2);
+  const initialSettings=await(await admin.get('/api/settings')).json();expect(initialSettings.recording).toMatchObject({provider:'assemblyai',enabled:false,disclosureVersion:RECORDING_DISCLOSURE_VERSION,retentionVerified:false,deletionVerified:false});expect(initialSettings.providers).toHaveProperty('voiceAgent');expect(initialSettings.providers).not.toHaveProperty('tts');const updated=await admin.patch('/api/settings',{data:{template:{...initialSettings.template,name:'Second fictional template'},escalationDestination:'Synthetic staff destination'}});expect(updated.status()).toBe(200);expect((await updated.json()).template.version).toBe(2);
   expect((await(await admin.get(`/api/calls/${call.id}`)).json()).snapshot.template.version).toBe(1);
   const templateOnly=await admin.patch('/api/settings',{data:{template:{...initialSettings.template,name:'Template-only fictional update'}}});expect(templateOnly.status()).toBe(200);const templateOnlySettings=await templateOnly.json();expect(templateOnlySettings.template.version).toBe(3);expect(templateOnlySettings.escalationDestination).toBe('Synthetic staff destination');
   expect((await admin.patch('/api/settings',{data:{recording:{enabled:false}}})).status()).toBe(400);

@@ -1,4 +1,4 @@
-import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
+import { expect, test, type Page, type WebSocketRoute } from './helpers/fixtures';
 import { resolve } from 'node:path';
 import { RECORDING_DISCLOSURE, RECORDING_DISCLOSURE_VERSION, type Mode } from '../../packages/contracts/src';
 import { newState } from '../../apps/realtime/src/state';
@@ -81,17 +81,23 @@ for (const savedMode of ['mock', 'live'] as const) {
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
     try {
       await page.goto(`${baseURL}/caller?call=${originalId}`);
-      await expect(page).toHaveTitle('NurseBridge · The intake workspace');
-      await expect(page.getByRole('heading', { name: 'Tell your story.' })).toBeVisible();
+      await expect(page).toHaveTitle('Your call · NurseBridge');
+      await expect(page.getByRole('heading', { name: 'Your call.', exact: true })).toBeVisible();
       await expect(page.getByText(/This call uses .* New calls use .* To change modes, end this call/)).toBeVisible();
       const consent = page.locator('.consent-label');
-      await expect(consent).toContainText(savedMode === 'live' ? RECORDING_DISCLOSURE : 'AssemblyAI recording is not used.');
+      await expect(consent).toContainText(savedMode === 'live' ? RECORDING_DISCLOSURE : 'Audio recording is not used.');
       await expect(consent.getByRole('checkbox')).toBeDisabled();
       await expect(page.getByRole('button', { name: 'Enable microphone & start intake' })).toBeDisabled();
       if (savedMode === 'mock') {
+        const tools = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: 'Transcript test tools' }) });
+        await expect(tools).not.toHaveAttribute('open', '');
+        await tools.locator('summary').click();
         await expect(page.getByRole('heading', { name: 'Transcript replay', exact: true })).toBeVisible();
         await expect(page.getByRole('button', { name: 'Replay transcript', exact: true })).toBeDisabled();
-      } else await expect(page.getByRole('heading', { name: 'Transcript replay', exact: true })).toHaveCount(0);
+      } else {
+        await expect(page.locator('summary').filter({ hasText: 'Transcript test tools' })).toHaveCount(0);
+        await expect(page.getByRole('heading', { name: 'Transcript replay', exact: true })).toHaveCount(0);
+      }
       expect(fixture.mutations).toEqual([]);
       expect(fixture.calls[0]).toMatchObject({ id: originalId, mode: savedMode, queueState: 'WAITING' });
       await page.screenshot({ path: testInfo.outputPath(`restored-${savedMode}-mode.png`), fullPage: true });
@@ -101,7 +107,7 @@ for (const savedMode of ['mock', 'live'] as const) {
       await page.getByRole('button', { name: 'Start another call' }).click();
       await page.getByRole('button', { name: 'Join call queue' }).click();
       await expect(page.getByText(/This call uses .* New calls use/)).toHaveCount(0);
-      await expect(consent).toContainText(runtimeMode === 'live' ? RECORDING_DISCLOSURE : 'AssemblyAI recording is not used.');
+      await expect(consent).toContainText(runtimeMode === 'live' ? RECORDING_DISCLOSURE : 'Audio recording is not used.');
       await consent.getByRole('checkbox').check();
       await page.getByRole('button', { name: 'Enable microphone & start intake' }).click();
       await expect.poll(() => fixture.mutations.filter(item => item.path.endsWith('/consent')).length).toBe(1);

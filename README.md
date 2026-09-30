@@ -43,7 +43,7 @@ pnpm install --frozen-lockfile
 pnpm demo
 ```
 
-Open the printed workspace URL, create a local workspace, then follow the guide. Use another browser profile for the caller invitation. `pnpm demo` builds the app and starts an isolated loopback runtime; it ignores local provider secrets and keeps its temporary data separate from development. Ctrl+C stops it, and the next run starts fresh. For a current build, `pnpm demo --skip-build` skips rebuilding. If ports are occupied, set `NURSEBRIDGE_QA_WEB_PORT=8899 NURSEBRIDGE_QA_REALTIME_PORT=8900`. See the [demo script](docs/demo-script.md) and [submission packet](docs/hackathon-submission.md).
+Open the printed call queue URL, create a local workspace, then choose **Invite a caller**. Use another browser profile for the caller invitation. `pnpm demo` builds the app and starts an isolated loopback runtime; it ignores local provider secrets and keeps its temporary data separate from development. Ctrl+C stops it, and the next run starts fresh. For a current build, `pnpm demo --skip-build` skips rebuilding. If ports are occupied, set `NURSEBRIDGE_QA_WEB_PORT=8899 NURSEBRIDGE_QA_REALTIME_PORT=8900`. See the [demo script](docs/demo-script.md) and [submission packet](docs/hackathon-submission.md).
 
 For persistent local development:
 
@@ -54,7 +54,7 @@ pnpm db:seed
 pnpm dev
 ```
 
-Open [the workspace guide](http://localhost:8787/workspace), create a local workspace, then open a caller invitation in a separate browser profile. Each participant must enable microphone and speaker access. Use headphones.
+Open [the nurse workspace](http://localhost:8787/nurse), create a local workspace, and choose **Invite a caller**. Open the generated invitation in a separate browser profile to reach the dedicated [caller page](http://localhost:8787/caller). Each participant must enable microphone and speaker access. Use headphones.
 
 Local configuration enables workspace enrollment only on matching HTTP loopback origins. Hosted deployments reject public workspace creation and require verified Cloudflare Access identity for staff sessions. Caller invitations remain scoped to their workspace. Managed staff provisioning and session renewal are tracked release requirements.
 
@@ -92,6 +92,12 @@ After explicitly configuring a local live runtime, `NURSEBRIDGE_LIVE_E2E=1 pnpm 
 
 [CI](.github/workflows/ci.yml) runs static, unit, Workers, tooling, build, and isolated browser checks without provider secrets. Local evidence and its limits are recorded in [test results](docs/test-results.md). A green test suite does not establish live carrier, physical-device, clinical, or production acceptance.
 
+## Editing intake templates
+
+Workspace administrators can open **Settings → Intake template → Edit template** to change the name, opening, question wording, and acknowledgment messages. Add or remove supported fields and use **Move up / Move down** to set question order. Keep 1–8 unique questions and 1–8 acknowledgment messages; earlier acknowledgments confirm answers, and the final message is used at completion.
+
+**Save template** publishes a new version for new calls. Active calls keep their captured version. Failed saves preserve the draft; a concurrent edit requires **Refresh settings & status** and review before retrying. **Cancel** confirms before discarding unsaved edits.
+
 ## Deployment and operations
 
 **Release status: pre-production.** Managed staff provisioning, provider recording controls, and hosted acceptance remain [release requirements](docs/production-readiness.md). Public automated intake stays disabled until the provider controls are verified. The software collects information and supports human handoff; it does not diagnose, recommend treatment, assess clinical urgency, or determine that waiting is safe.
@@ -105,7 +111,7 @@ pnpm deploy --env staging
 
 Use `--env production` only for the production environment. Deployment validates configuration, builds and dry-runs both Workers before any remote migration or upload. These checks cannot certify provider account settings, resource access policies, or operational readiness. No deploy runs automatically in CI.
 
-Application case content expires after seven days. Provider recording retention, backups, metadata cleanup, and long-lived organization accounts have separate requirements. Read the [operations runbook](docs/operations.md), [safety and privacy boundaries](docs/safety-and-privacy.md), and [release checklist](docs/production-readiness.md) before enabling an environment.
+Application case content defaults to seven days; workspace administrators can select 1–30 days in Settings for new cases and exports. Existing cases keep their original expiry. Workspace availability extends to cover retained cases; session and invitation expiry remain independent. Settings also control automated intake, consented recording permission, inbound calls on operator-assigned numbers, and the browser nurse handoff destination label. Credentials remain deployment-managed. Recording-off uses nurse-only calls when the live provider cannot guarantee recording is disabled. Provider recording retention, backups, metadata cleanup, and long-lived organization accounts have separate requirements. Read the [operations runbook](docs/operations.md), [safety and privacy boundaries](docs/safety-and-privacy.md), and [release checklist](docs/production-readiness.md) before enabling an environment.
 
 ## Repository
 

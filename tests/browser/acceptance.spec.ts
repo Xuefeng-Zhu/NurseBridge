@@ -1,4 +1,4 @@
-import { chromium, expect, test, type Browser, type BrowserContext, type ConsoleMessage, type Page } from '@playwright/test';
+import { chromium, expect, test, type Browser, type BrowserContext, type ConsoleMessage, type Page } from './helpers/fixtures';
 import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
@@ -25,7 +25,7 @@ async function snapshot(page: Page, callId: string): Promise<CallSnapshot> {
   throw new Error('Authoritative call fetch exhausted transient retries');
 }
 
-async function audioBrowser(frequency: 440 | 660): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
+async function audioBrowser(frequency: 440 | 660, extraHTTPHeaders?: Record<string, string>): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
@@ -36,7 +36,7 @@ async function audioBrowser(frequency: 440 | 660): Promise<{ browser: Browser; c
       '--autoplay-policy=no-user-gesture-required',
     ],
   });
-  const context = await browser.newContext({ baseURL, permissions: ['microphone'], viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce' });
+  const context = await browser.newContext({ baseURL, extraHTTPHeaders, permissions: ['microphone'], viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce' });
   const page = await context.newPage();
   return { browser, context, page };
 }
@@ -46,13 +46,12 @@ async function workspace(page: Page): Promise<void> {
   const created = page.waitForResponse(response => response.url().endsWith('/api/demo/session') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Create local workspace' }).click();
   expect((await created).status()).toBe(201);
-  await expect(page.getByText('Your isolated workspace is ready')).toBeVisible();
-  await page.goto(`${baseURL}/nurse`);
-  await expect(page.getByRole('heading', { name: 'Context before conversation.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Call queue', exact: true })).toBeVisible();
 }
 
 async function invite(admin: Page, caller: Page): Promise<string> {
-  await admin.goto(`${baseURL}/demo`);
+  await admin.goto(`${baseURL}/nurse`);
+  await admin.getByRole('button', { name: 'Invite a caller', exact: true }).click();
   await admin.getByRole('button', { name: 'Create caller invitation' }).click();
   const link = admin.locator('.invitation-result a');
   await expect(link).toBeVisible();
@@ -81,9 +80,9 @@ function frequency(value: Record<string, unknown>): number {
   return Number(audio.dominantFrequency ?? 0);
 }
 
-test('visible intake preserves evidence and corrections, then relays both distinct human microphones', async ({}, testInfo) => {
-  const caller = await audioBrowser(440);
-  const nurse = await audioBrowser(660);
+test('visible intake preserves evidence and corrections, then relays both distinct human microphones', async ({ extraHTTPHeaders }, testInfo) => {
+  const caller = await audioBrowser(440, extraHTTPHeaders);
+  const nurse = await audioBrowser(660, extraHTTPHeaders);
   const errors: string[] = [];
   const nurseConsoleErrors: ConsoleMessage[] = [];
   const takeoverTraffic = watchTakeoverOutcomes(nurse.page);
@@ -114,6 +113,7 @@ test('visible intake preserves evidence and corrections, then relays both distin
     await caller.page.getByRole('button', { name: 'Enable microphone & start intake' }).click();
     await expect.poll(async () => (await snapshot(caller.page, call.id)).mediaReady.caller).toBe(true);
 
+    await caller.page.locator('summary').filter({ hasText: 'Transcript test tools' }).click();
     const lines = [
       'I am calling about a headache that started yesterday afternoon. It is mostly behind my eyes. I would describe it as a six out of ten.',
       'No other symptoms. I have not checked my temperature.',
@@ -149,7 +149,7 @@ test('visible intake preserves evidence and corrections, then relays both distin
     await expect(nurse.page.getByRole('button', { name: 'Take over call' })).toBeEnabled();
     await nurse.page.getByRole('button', { name: 'Take over call' }).click();
     await expect.poll(async () => (await snapshot(nurse.page, call.id)).queueState, { timeout: 20_000 }).toBe('CONNECTED');
-    await expect(caller.page.getByText('Two-way browser audio is active. Automated providers are stopped.')).toBeVisible();
+    await expect(caller.page.getByRole('region', { name: 'Browser call' }).getByText('Speak with your nurse. Automated intake is off.', { exact: true })).toBeVisible();
     await expect(nurse.page.getByText('Human audio connected', { exact: true })).toBeVisible();
     const connected = await snapshot(nurse.page, call.id);
     expect(connected.conversationOwner).toBe('NURSE');
@@ -247,7 +247,7 @@ test('completed collection ends automation and keeps the caller waiting within t
   expect(Object.values(waiting.collection).every(field => field.status === 'answered')).toBe(true);
   expect(['idle', 'ended']).toContain(waiting.providerSession.status);
   await expect(page.getByRole('status').filter({ hasText: /^WAITING FOR A NURSE$/ })).toBeVisible();
-  await expect(page.getByText(/automated intake is complete/i)).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Browser call' }).getByText(`${call.template.acknowledgments.at(-1)} Intake complete — waiting for a nurse.`, { exact: true })).toBeVisible();
   await expect(page.getByText(/Call time remaining/)).toBeVisible();
 
   let sessionReadInterrupted = false;
@@ -265,10 +265,10 @@ test('completed collection ends automation and keeps the caller waiting within t
   expect(sessionReadInterrupted).toBe(true);
 });
 
-test('declining automated intake preserves queue arrival and isolates another workspace', async ({ browser }) => {
-  const adminContext = await browser.newContext();
-  const callerContext = await browser.newContext();
-  const outsiderContext = await browser.newContext();
+test('declining automated intake preserves queue arrival and isolates another workspace', async ({ browser, extraHTTPHeaders }) => {
+  const adminContext = await browser.newContext({ extraHTTPHeaders });
+  const callerContext = await browser.newContext({ extraHTTPHeaders });
+  const outsiderContext = await browser.newContext({ extraHTTPHeaders });
   const admin = await adminContext.newPage();
   const caller = await callerContext.newPage();
   const outsider = await outsiderContext.newPage();

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './helpers/fixtures';
 import type { CallSnapshot, DemoSettings } from '../../packages/contracts/src/index';
 
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
@@ -123,9 +123,13 @@ test('caller closes terminal calls from polling and deletion events and removes 
       await page.unroute(`${baseURL}/api/calls/${deleted.id}`);
       await expect.poll(async () => (await calls(page)).some(call => call.id === deleted.id)).toBe(false);
       if (via === 'poll') {
+        // An explicit deleted-call link must win over a different case that
+        // the queue projection still reports as active after a full reload.
+        staleProjection = retiredProjection;
         await page.goto(`${baseURL}/caller?call=${deleted.id}`);
         await expect(page.getByRole('heading', { name: 'Your call was deleted.' })).toBeVisible();
         await expect(page.getByRole('button', { name: 'Join call queue' })).toHaveCount(0);
+        staleProjection = undefined;
       }
       retiredProjection = deleted;
     }
@@ -138,20 +142,20 @@ test('caller closes terminal calls from polling and deletion events and removes 
 test('settings cancel discards template changes and each save preserves the other draft', async ({ page }) => {
   await workspace(page, '/settings');
   const initial = await settings(page);
-  await page.getByRole('button', { name: 'Create next version' }).click();
+  await page.getByRole('button', { name: 'Edit template' }).click();
   await page.getByLabel('Template name', { exact: true }).fill('Unpublished fictional template');
   await page.getByLabel('Approved opening question').fill('What fictional information would you like to share?');
   await page.getByLabel('Staff destination').fill('Synthetic recovery QA queue');
   await page.getByRole('button', { name: 'Save destination', exact: true }).click();
   await expect(page.getByText('Workspace settings saved.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Cancel editing' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
   await expect(page.getByLabel('Template name', { exact: true })).toHaveValue('Unpublished fictional template');
   await expect(page.getByLabel('Approved opening question')).toHaveValue('What fictional information would you like to share?');
   expect((await settings(page)).template).toEqual(initial.template);
 
-  await page.getByRole('button', { name: 'Cancel editing' }).click();
+  await page.getByRole('button', { name: 'Cancel' }).click();
   await page.getByRole('button', { name: 'Discard template changes' }).click();
-  await page.getByRole('button', { name: 'Create next version' }).click();
+  await page.getByRole('button', { name: 'Edit template' }).click();
   await expect(page.getByLabel('Template name', { exact: true })).toHaveValue(initial.template.name);
   await expect(page.getByLabel('Approved opening question')).toHaveValue(initial.template.opening);
   await page.getByLabel('Template name', { exact: true }).fill('Published fictional recovery template');
@@ -160,8 +164,13 @@ test('settings cancel discards template changes and each save preserves the othe
   const externalUpdate = await page.request.patch(`${baseURL}/api/settings`, { headers: { Origin: origin }, data: { escalationDestination: 'Externally updated fictional queue' } });
   expect(externalUpdate.status()).toBe(200);
   const publishRequest = page.waitForRequest(request => new URL(request.url()).pathname === '/api/settings' && request.method() === 'PATCH');
-  await page.getByRole('button', { name: 'Publish next template version' }).click();
+  await page.getByRole('button', { name: 'Save template' }).click();
   expect((await publishRequest).postDataJSON()).not.toHaveProperty('escalationDestination');
+  await expect(page.getByRole('main').getByRole('alert')).toContainText('Settings changed in another session');
+  await page.getByRole('button', { name: 'Refresh settings & status' }).click();
+  await expect(page.getByText('Settings refreshed. Unsaved drafts were preserved; review them before saving.', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Template name', { exact: true })).toHaveValue('Published fictional recovery template');
+  await page.getByRole('button', { name: 'Save template', exact: true }).click();
   await expect(page.getByText(`Template version ${initial.template.version + 1} published for new calls. Active calls retain their original template.`)).toBeVisible();
   const published = await settings(page);
   expect(published.template.name).toBe('Published fictional recovery template');
