@@ -300,6 +300,11 @@ test('declining automated intake preserves queue arrival and isolates another wo
     const privateResponse = await admin.request.get(`${baseURL}/api/calls/${call.id}`);
     expect(privateResponse.headers()['cache-control']).toBe('private, no-store');
     await caller.goto(`${baseURL}/nurse`);
-    await expect(caller.getByRole('heading', { name: 'This invitation is for a caller.' })).toBeVisible();
+    await expect(caller.getByRole('heading', { name: 'Call queue', exact: true })).toBeVisible();
+    const localStaff = await caller.request.get(`${baseURL}/api/demo/session`, { headers: { 'X-NurseBridge-View': 'staff' } });
+    expect((await localStaff.json()).session).toMatchObject({ workspaceId: call.workspaceId, role: 'admin' });
+    const retainedCaller = await caller.request.get(`${baseURL}/api/demo/session`, { headers: { 'X-NurseBridge-View': 'caller' } });
+    expect((await retainedCaller.json()).session).toMatchObject({ workspaceId: call.workspaceId, participantId: call.callerParticipantId, role: 'caller' });
+    expect((await outsider.request.get(`${baseURL}/api/calls/${call.id}`)).status()).toBe(404);
   } finally { await adminContext.close(); await callerContext.close(); await outsiderContext.close(); }
 });

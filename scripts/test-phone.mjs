@@ -273,7 +273,7 @@ async function main() {
   await waitForRuntime(fixture);
   runtimeReady = true;
   if (flags.has('--demo')) {
-    console.log(`\nLocal app ready: ${baseURL}/nurse\nCreate a local workspace, then choose Invite a caller in the call queue. Open the invitation in a separate browser profile.\nTranscript replay and synthetic phone emulator only; AssemblyAI, Nebius and real Twilio calls are off.\nThis demo listens on this computer only. Press Ctrl+C to stop; the next run starts with fresh data.`);
+    console.log(`\nLocal app ready: ${baseURL}/nurse\nCreate a local workspace, then choose Invite a caller in the call queue. Open the invitation in another tab; nurse and caller sessions stay separate.\nTranscript replay and synthetic phone emulator only; AssemblyAI, Nebius and real Twilio calls are off.\nThis demo listens on this computer only. Press Ctrl+C to stop; the next run starts with fresh data.`);
     await runtime.done;
     return;
   }

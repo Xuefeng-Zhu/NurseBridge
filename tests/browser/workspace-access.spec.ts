@@ -3,9 +3,9 @@ import { expect, test, type Page } from './helpers/fixtures';
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
 const origin = new URL(baseURL).origin;
 
-async function callerOnly(page: Page) {
+async function callerOnly(page: Page, localNavigation = false) {
   await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toHaveCount(0);
-  await expect(page.getByRole('link', { name: /Nurse workspace|Settings|guide/i })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: localNavigation ? /Settings|guide/i : /Nurse workspace|Settings|guide/i })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'NurseBridge', exact: true })).toHaveAttribute('href', '/caller');
 }
 
@@ -28,7 +28,7 @@ test('nurse enrollment and invitations open an isolated, responsive caller journ
     await expect(page).toHaveURL(`${origin}/nurse`);
     await expect(page.getByRole('heading', { name: 'Your care team workspace.' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create local workspace' })).toBeEnabled();
-    await expect(page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('link')).toHaveText(['Nurse workspace', 'Settings']);
+    await expect(page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('link')).toHaveText(['Nurse workspace', 'Settings', 'Caller page']);
     await expect(page.getByRole('link', { name: /guide|walkthrough/i })).toHaveCount(0);
   }
   await expect(page).toHaveTitle('NurseBridge · The intake workspace');
@@ -70,7 +70,7 @@ test('nurse enrollment and invitations open an isolated, responsive caller journ
     await expect(caller).toHaveTitle('Your call · NurseBridge');
     await expect(caller.getByRole('heading', { name: 'Open your call invitation.' })).toBeVisible();
     await expect(caller.getByRole('button', { name: /Create.*workspace/ })).toHaveCount(0);
-    await callerOnly(caller);
+    await callerOnly(caller, true);
     expect(callerSessionPosts).toBe(0);
 
     await caller.goto(invitationURL);
@@ -82,12 +82,15 @@ test('nurse enrollment and invitations open an isolated, responsive caller journ
     expect(sessionResponse.ok()).toBe(true);
     const { session } = await sessionResponse.json() as { session: { workspaceId: string; role: string } };
     expect(session).toMatchObject({ workspaceId: admin.session.workspaceId, role: 'caller' });
-    await callerOnly(caller);
+    await callerOnly(caller, true);
     expect((await caller.request.get('/api/settings')).status()).toBe(403);
     await caller.goto('/settings');
-    await expect(caller.getByRole('heading', { name: 'This invitation is for a caller.' })).toBeVisible();
-    await callerOnly(caller);
-    await caller.getByRole('link', { name: 'Open your call', exact: true }).click();
+    await expect(caller.getByRole('heading', { name: 'Intake template', exact: true })).toBeVisible();
+    const localStaff = await caller.request.get('/api/demo/session', { headers: { 'X-NurseBridge-View': 'staff' } });
+    expect((await localStaff.json()).session).toMatchObject({ workspaceId: admin.session.workspaceId, role: 'admin' });
+    const preservedCaller = await caller.request.get('/api/demo/session', { headers: { 'X-NurseBridge-View': 'caller' } });
+    expect((await preservedCaller.json()).session).toEqual(session);
+    await caller.getByRole('link', { name: 'Caller page', exact: true }).click();
     await expect(caller).toHaveTitle('Your call · NurseBridge');
     await expect(caller.getByRole('heading', { name: 'Your call.', exact: true })).toBeVisible();
     const [created] = await Promise.all([
@@ -102,7 +105,7 @@ test('nurse enrollment and invitations open an isolated, responsive caller journ
     await expect(page.getByRole('region', { name: 'Caller queue' }).getByRole('heading', { name: `Caller ${call.id.slice(-4).toUpperCase()}`, exact: true })).toBeVisible();
     for (const viewport of [{ width: 1440, height: 1050 }, { width: 390, height: 844 }]) {
       await caller.setViewportSize(viewport);
-      await callerOnly(caller);
+      await callerOnly(caller, true);
       expect(await caller.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
       await caller.screenshot({ path: testInfo.outputPath(`caller-journey-${viewport.width}.png`), fullPage: false });
     }

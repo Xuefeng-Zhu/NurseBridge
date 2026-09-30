@@ -43,7 +43,7 @@ pnpm install --frozen-lockfile
 pnpm demo
 ```
 
-Open the printed call queue URL, create a local workspace, then choose **Invite a caller**. Use another browser profile for the caller invitation. `pnpm demo` builds the app and starts an isolated loopback runtime; it ignores local provider secrets and keeps its temporary data separate from development. Ctrl+C stops it, and the next run starts fresh. For a current build, `pnpm demo --skip-build` skips rebuilding. If ports are occupied, set `NURSEBRIDGE_QA_WEB_PORT=8899 NURSEBRIDGE_QA_REALTIME_PORT=8900`. See the [demo script](docs/demo-script.md) and [submission packet](docs/hackathon-submission.md).
+Open the printed call queue URL, create a local workspace, then choose **Invite a caller**. Open the caller invitation in another tab. Nurse and caller sessions stay separate in the same browser. `pnpm demo` builds the app and starts an isolated loopback runtime; it ignores local provider secrets and keeps its temporary data separate from development. Ctrl+C stops it, and the next run starts fresh. For a current build, `pnpm demo --skip-build` skips rebuilding. If ports are occupied, set `NURSEBRIDGE_QA_WEB_PORT=8899 NURSEBRIDGE_QA_REALTIME_PORT=8900`. See the [demo script](docs/demo-script.md) and [submission packet](docs/hackathon-submission.md).
 
 For persistent local development:
 
@@ -54,7 +54,7 @@ pnpm db:seed
 pnpm dev
 ```
 
-Open [the nurse workspace](http://localhost:8787/nurse), create a local workspace, and choose **Invite a caller**. Open the generated invitation in a separate browser profile to reach the dedicated [caller page](http://localhost:8787/caller). Each participant must enable microphone and speaker access. Use headphones.
+Open [the nurse workspace](http://localhost:8787/nurse), create a local workspace, and choose **Invite a caller**. Open the generated invitation in another tab to reach the dedicated [caller page](http://localhost:8787/caller). Each participant must enable microphone and speaker access. Use headphones.
 
 Local configuration enables workspace enrollment only on matching HTTP loopback origins. Hosted deployments reject public workspace creation and require verified Cloudflare Access identity for staff sessions. Caller invitations remain scoped to their workspace. Managed staff provisioning and session renewal are tracked release requirements.
 

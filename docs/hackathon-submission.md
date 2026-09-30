@@ -88,7 +88,7 @@ The inbound phone implementation is merged into `main` (merge `85b1f15`). The in
 
 These are a local fallback, not a replacement for LabLab's requested interactive application URL.
 
-Prerequisites: Node 24.14.1, pnpm 11.19.0, macOS/Linux/WSL, two separate browser profiles, and headphones for audible human relay. The isolated demo requires no AI or carrier credentials.
+Prerequisites: Node 24.14.1, pnpm 11.19.0, macOS/Linux/WSL, two browser tabs, and headphones for audible human relay. The isolated demo requires no AI or carrier credentials.
 
 Run these commands from the source revision shared with judges. `pnpm demo` builds the app, migrates and seeds fresh temporary storage, and starts both Workers on loopback with providers off. It ignores local provider credentials and preserves the normal development database.
 
@@ -100,7 +100,7 @@ pnpm demo
 If ports 8787/8788 are occupied, run `NURSEBRIDGE_QA_WEB_PORT=8987 NURSEBRIDGE_QA_REALTIME_PORT=8988 pnpm demo` and use the printed workspace URL. Stop with Ctrl+C; the next run starts with fresh data. This loopback-only session is for an in-person or screen-shared demo, not a public submission URL.
 
 1. Open the printed workspace URL (by default `http://localhost:8787/workspace`). Create a local isolated workspace and keep the nurse workspace in that browser.
-2. Redeem the caller invitation in a separate browser/profile. Join the queue, then accept the fictional-intake disclosure.
+2. Redeem the caller invitation in another tab; the nurse session remains available. Join the queue, then accept the fictional-intake disclosure.
 3. Use the visible **mock** scenario controls to replay fictional intake. They insert transcript fixtures; they do not transcribe the microphone. Mock agent output is a tone with text captions.
 4. Open the nurse draft and inspect supporting quotes. Replay the correction from “yesterday” to “this morning,” then inspect revision history.
 5. Show an explicitly not-measured or uncertain answer. For the takeover demonstration, stop before repeating an unresolved answer so the agent's first clarification cue is still playing.

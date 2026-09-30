@@ -4,7 +4,7 @@ import { CommandBodySchema, FieldSchema, DISCLOSURE, RECORDING_DISCLOSURE_VERSIO
 import { DEFAULT_TEMPLATE } from '@nursebridge/intake-policy';
 import { RETENTION_MS, SESSION_MS, CALL_DURATION_MS } from '@nursebridge/database';
 import { env, callObject, type AppEnv } from './env';
-import { session, origin, hash, token, sessionCookie, rateLimit, enrollmentMode, requireStaffAccess } from './auth';
+import { session, origin, hash, token, sessionCookie, rateLimit, enrollmentMode, requireStaffAccess, preserveLegacySessionCookie } from './auth';
 import { body, json, HttpError, unwrap } from './http';
 const uuid = z.string().uuid();
 const staff = ['admin', 'nurse'] as const;
@@ -21,6 +21,10 @@ export async function createSession(request: Request) {
     const bindings = env();
     origin(request, bindings);
     const data = await body(request);
+    const localStaffAccess = z.boolean().optional().parse(data.localStaffAccess) === true;
+    if (localStaffAccess && enrollmentMode(request, bindings) !== 'sandbox')
+        throw new HttpError(403, 'Local staff access is available only in an enabled local sandbox');
+    if (localStaffAccess && data.invitation) throw new HttpError(400, 'Open the invitation before switching local roles');
     if (!data.invitation && enrollmentMode(request, bindings) !== 'sandbox')
         throw new HttpError(403, 'Workspace creation is available only in an enabled local sandbox');
     const now = Date.now();
@@ -34,8 +38,21 @@ export async function createSession(request: Request) {
         if (!checked.success || checked.hostname !== new URL(bindings.APP_ORIGIN).hostname)
             throw new HttpError(403, 'Verification failed');
     }
+    let recoveredWorkspaceId: string | undefined;
+    if (localStaffAccess) {
+        const headers = new Headers(request.headers);
+        headers.set('X-NurseBridge-View', 'staff');
+        // This path is guarded by exact loopback sandbox enrollment above.
+        // Reuse a held staff identity; do not create participants on each reload.
+        const staffRequest = new Request(request.url, { headers });
+        const existing = await session(staffRequest, bindings);
+        if (existing.role !== 'caller') return json({ session: existing, mode: bindings.PROVIDER_MODE, realtimeUrl: bindings.REALTIME_URL });
+        headers.set('X-NurseBridge-View', 'caller');
+        const caller = await session(new Request(request.url, { headers }), bindings, ['caller']);
+        recoveredWorkspaceId = caller.workspaceId;
+    }
     const participantId = crypto.randomUUID();
-    let workspaceId = crypto.randomUUID();
+    let workspaceId = recoveredWorkspaceId ?? crypto.randomUUID();
     let role: 'admin' | 'nurse' | 'caller' = 'admin';
     const raw = token();
     const tokenHash = await hash(raw);
@@ -56,11 +73,16 @@ export async function createSession(request: Request) {
         workspaceId = invite.workspace_id;
         role = invite.role;
     }
-    else {
+    else if (!recoveredWorkspaceId) {
         await bindings.DB.batch([bindings.DB.prepare('INSERT INTO workspaces(id,created_at,expires_at) VALUES(?,?,?)').bind(workspaceId, now, now + RETENTION_MS), bindings.DB.prepare('INSERT INTO template_versions(id,workspace_id,version,body_json,created_at) VALUES(?,?,?,?,?)').bind(DEFAULT_TEMPLATE.id, workspaceId, 1, JSON.stringify(DEFAULT_TEMPLATE), now)]);
     }
     await bindings.DB.batch([bindings.DB.prepare('INSERT INTO participants(id,workspace_id,role,created_at) VALUES(?,?,?,?)').bind(participantId, workspaceId, role, now), bindings.DB.prepare('INSERT INTO sessions(token_hash,workspace_id,participant_id,role,expires_at) VALUES(?,?,?,?,?)').bind(tokenHash, workspaceId, participantId, role, now + SESSION_MS)]);
-    return json({ session: { workspaceId, participantId, role, expiresAt: now + SESSION_MS }, mode: bindings.PROVIDER_MODE, realtimeUrl: bindings.REALTIME_URL }, 201, { 'Set-Cookie': sessionCookie(raw, bindings) });
+    const preserved = await preserveLegacySessionCookie(request, bindings, role);
+    const response = json({ session: { workspaceId, participantId, role, expiresAt: now + SESSION_MS }, mode: bindings.PROVIDER_MODE, realtimeUrl: bindings.REALTIME_URL }, 201);
+    response.headers.append('Set-Cookie', sessionCookie(raw, bindings));
+    response.headers.append('Set-Cookie', sessionCookie(raw, bindings, role));
+    if (preserved) response.headers.append('Set-Cookie', preserved);
+    return response;
 }
 export async function invitation(request: Request) { const { bindings, user, data } = await mutation(request, ['admin']); const role = z.enum(['caller', 'nurse']).parse(data.role); await rateLimit(bindings, 'invite:' + user.workspaceId, 20, 3600000); const value = token(), expiresAt = Date.now() + 600000; await bindings.DB.prepare('INSERT INTO invitations(token_hash,workspace_id,role,expires_at) VALUES(?,?,?,?)').bind(await hash(value), user.workspaceId, role, expiresAt).run(); return json({ url: bindings.APP_ORIGIN + '/' + (role === 'caller' ? 'caller' : 'nurse') + '#invite=' + value, expiresAt }, 201); }
 export async function listCalls(request: Request) { const bindings = env(), user = await session(request, bindings); const sql = user.role === 'caller' ? 'SELECT snapshot_json,updated_at FROM calls WHERE workspace_id=? AND caller_participant_id=? AND expires_at>? ORDER BY created_at' : 'SELECT snapshot_json,updated_at FROM calls WHERE workspace_id=? AND expires_at>? ORDER BY created_at'; const args = user.role === 'caller' ? [user.workspaceId, user.participantId, Date.now()] : [user.workspaceId, Date.now()]; const rows = await bindings.DB.prepare(sql).bind(...args).all<{

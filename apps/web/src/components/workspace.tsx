@@ -6,20 +6,36 @@ import { usePathname } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Icon, type IconName } from "./icons";
 import { ApiError, requestJson } from "./workspace-api";
+import { canonicalLocalWorkspaceURL } from "./workspace-origin";
 
 export type Session = { workspaceId: string; participantId: string; role: "admin" | "nurse" | "caller"; expiresAt: number | string };
 type SessionResponse = { session: Session; mode: "mock" | "live"; realtimeUrl: string; diagnostics?: boolean };
+type WorkspaceView = "caller" | "staff" | "current";
+function workspaceView(path: string): WorkspaceView {
+  if (path === "/caller") return "caller";
+  if (path === "/nurse" || path === "/settings") return "staff";
+  return "current";
+}
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  return requestJson<T>(path, options);
+  const headers = new Headers(options.headers);
+  const view = workspaceView(typeof window === "undefined" ? "" : window.location.pathname);
+  if (view !== "current") headers.set("X-NurseBridge-View", view);
+  return requestJson<T>(path, { ...options, headers });
 }
 export function mutate<T>(path: string, body: Record<string, unknown> = {}, method = "POST") {
   return api<T>(path, { method, body: JSON.stringify({ commandId: crypto.randomUUID(), ...body }) });
 }
-type WorkspaceContext = { enrollmentMode: "sandbox" | "closed"; session: Session | null; mode: "mock" | "live" | null; realtimeUrl: string; diagnostics: boolean; loading: boolean; error: string | null; hasInvitation: boolean; verificationReady: boolean; turnstileSiteKey: string | null; verificationAttempt: number; setVerificationToken: (token: string | null) => void; refresh: () => Promise<void>; retry: () => Promise<void>; create: (invitation?: string) => Promise<void> };
+type WorkspaceContext = { enrollmentMode: "sandbox" | "closed"; session: Session | null; mode: "mock" | "live" | null; realtimeUrl: string; diagnostics: boolean; loading: boolean; error: string | null; hasInvitation: boolean; verificationReady: boolean; turnstileSiteKey: string | null; verificationAttempt: number; setVerificationToken: (token: string | null) => void; refresh: () => Promise<SessionResponse | null>; retry: () => Promise<void>; create: (invitation?: string) => Promise<void> };
 const Context = createContext<WorkspaceContext | null>(null);
 export function useWorkspace() { const context = useContext(Context); if (!context) throw new Error("Workspace provider is missing."); return context; }
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
+  const path = usePathname();
+  const view = workspaceView(path);
+  return <WorkspaceSession key={view} view={view}>{children}</WorkspaceSession>;
+}
+
+function WorkspaceSession({ children, view }: { children: ReactNode; view: WorkspaceView }) {
   const [data, setData] = useState<SessionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -32,19 +48,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const initialized = useRef(false);
   const initialization = useRef<{ invitation?: string; work: Promise<void> } | null>(null);
   const refresh = useCallback(async () => {
-    try { setData(await api<SessionResponse>("/api/demo/session")); setError(null); }
+    try {
+      const current = await api<SessionResponse>("/api/demo/session");
+      setData(current); setError(null); return current;
+    }
     catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) { setData(null); setError(null); }
       else setError(errorMessage(reason));
+      return null;
     }
     finally { setLoading(false); }
   }, []);
-  const issueSession = useCallback(async (invitation?: string, turnstileToken?: string) => {
+  const issueSession = useCallback(async (invitation?: string, turnstileToken?: string, localStaffAccess = false) => {
     setLoading(true); setError(null);
     try {
-      await mutate("/api/demo/session", { ...(invitation ? { invitation } : {}), ...(turnstileToken ? { turnstileToken } : {}) });
-      // The cookie now belongs to the new session; do not show the previous
-      // identity if loading that session fails. Retry can read the new cookie.
+      await mutate("/api/demo/session", { ...(invitation ? { invitation } : {}), ...(turnstileToken ? { turnstileToken } : {}), ...(localStaffAccess ? { localStaffAccess: true } : {}) });
+      // Reload this route's role after issuing its independent session cookie.
+      // Do not display a stale identity if reading the new session fails.
       setData(null);
       setPendingInvitation((pending) => pending === invitation ? null : pending);
       await refresh();
@@ -63,10 +83,25 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const load = async () => {
       setLoading(true); setError(null);
       try {
-        const configuration = await api<{ turnstileSiteKey: string | null; enrollmentMode: "sandbox" | "closed" }>("/api/demo/config");
+        const configuration = await api<{ appOrigin?: string; turnstileSiteKey: string | null; enrollmentMode: "sandbox" | "closed" }>("/api/demo/config");
+        const canonicalURL = canonicalLocalWorkspaceURL(window.location.href, configuration.appOrigin);
+        if (canonicalURL) {
+          const destination = new URL(canonicalURL);
+          // Invitation state survives a configuration retry, and travels only
+          // in the fragment when changing between validated local hostnames.
+          if (invitation) destination.hash = new URLSearchParams({ invite: invitation }).toString();
+          window.location.replace(destination.href);
+          return;
+        }
         setTurnstileSiteKey(configuration.turnstileSiteKey); setEnrollmentMode(configuration.enrollmentMode === "sandbox" ? "sandbox" : "closed"); setConfigurationReady(true);
         if (invitation) { if (configuration.turnstileSiteKey) setLoading(false); else await issueSession(invitation); }
-        else await refresh();
+        else {
+          const current = await refresh();
+          // Old local sessions may predate separate staff/caller cookies. The
+          // server allows recovery only in the explicitly enabled local sandbox.
+          if (view === "staff" && configuration.enrollmentMode === "sandbox" && current?.session.role === "caller" && !configuration.turnstileSiteKey)
+            await issueSession(undefined, undefined, true);
+        }
       } catch (reason) { setError(errorMessage(reason)); setLoading(false); }
     };
     // Finish an anonymous lookup before redeeming a newly opened invitation.
@@ -76,7 +111,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const clear = () => { if (initialization.current?.work === work) initialization.current = null; };
     void work.then(clear, clear);
     return work;
-  }, [refresh, issueSession]);
+  }, [refresh, issueSession, view]);
   const retry = useCallback(() => initialize(pendingInvitation || undefined), [initialize, pendingInvitation]);
   useEffect(() => {
     const openInvitation = () => {
@@ -121,12 +156,14 @@ const navigation: { href: string; label: string; icon: IconName }[] = [
 ];
 export function Shell({ children }: { children: ReactNode }) {
   const path = usePathname();
-  const { mode, session } = useWorkspace();
+  const { mode, session, enrollmentMode } = useWorkspace();
+  const localWorkspace = enrollmentMode === "sandbox";
+  const links = localWorkspace ? [...navigation, { href: "/caller", label: "Caller page", icon: "phone" as const }] : navigation;
   const callerView = path === "/caller" || session?.role === "caller";
   return <div className={`application ${callerView ? "caller-application" : "staff-application"}`}>
     {!callerView && <aside className="sidebar">
       <Link className="brand-symbol" href="/nurse" aria-label="NurseBridge workspace home"><span /><span /></Link>
-      <nav aria-label="Primary navigation">{navigation.map((item) => <Link key={item.href} href={item.href} className={`nav-icon ${path === item.href ? "active" : ""}`} aria-current={path === item.href ? "page" : undefined} title={item.label}><Icon name={item.icon} /><span>{item.label}</span></Link>)}</nav>
+      <nav aria-label="Primary navigation">{links.map((item) => <Link key={item.href} href={item.href} className={`nav-icon ${path === item.href ? "active" : ""}`} aria-current={path === item.href ? "page" : undefined} title={item.label}><Icon name={item.icon} /><span>{item.label}</span></Link>)}</nav>
       <div className="sidebar-foot" title="NurseBridge">NB</div>
     </aside>}
     <div className="application-main">
@@ -134,7 +171,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <Link href={callerView ? "/caller" : "/nurse"} className="wordmark">Nurse<span>Bridge</span></Link>
         <span className="topbar-divider" /><span className="topbar-label">{callerView ? "YOUR CALL" : "CARE TEAM WORKSPACE"}</span>
         <div className="topbar-right">
-          {callerView ? <span className="caller-header-label"><Icon name="phone" size={15} />Connect with your care team</span> : <>
+          {callerView ? localWorkspace ? <Link href="/nurse" className="text-link">Nurse workspace <Icon name="arrow" size={15} /></Link> : <span className="caller-header-label"><Icon name="phone" size={15} />Connect with your care team</span> : <>
             <span className={`mode-label ${mode === "mock" ? "amber" : ""}`}><span className="status-dot" />{mode === "mock" ? "TEST ENVIRONMENT" : "VOICE INTAKE"}</span>
             {session && <span className="avatar" title={session.role === "admin" ? "Workspace administrator" : "Nurse"}>{session.role === "admin" ? "A" : "N"}</span>}
           </>}

@@ -57,13 +57,15 @@ function jwt(overrides: Record<string, unknown> = {}, algorithm = 'RS256') {
     return `${unsigned}.${sign('RSA-SHA256', Buffer.from(unsigned), key.privateKey).toString('base64url')}`;
 }
 
-function request(options: { origin?: string; accessToken?: string; cookie?: boolean; data?: unknown } = {}) {
+function request(options: { origin?: string; accessToken?: string; cookie?: boolean; cookies?: string; view?: string; data?: unknown } = {}) {
     const origin = options.origin ?? runtime.bindings.APP_ORIGIN;
     return new Request(`${origin}/api/demo/session`, {
         method: options.data === undefined ? 'GET' : 'POST',
         headers: {
             Origin: origin,
             ...(options.cookie ? { Cookie: `nb_session=${sessionToken}` } : {}),
+            ...(options.cookies ? { Cookie: options.cookies } : {}),
+            ...(options.view ? { 'X-NurseBridge-View': options.view } : {}),
             ...(options.accessToken ? { 'cf-access-jwt-assertion': options.accessToken } : {}),
             ...(options.data === undefined ? {} : { 'Content-Type': 'application/json' }),
         },
@@ -274,5 +276,162 @@ describe('invitation redemption', () => {
         await expect(createSession(request({ data: { invitation: invitationToken } }))).rejects.toMatchObject({ status: 410 });
         expect(redeemedBy()).toBeNull();
         expect(count('sessions')).toBe(0);
+    });
+});
+
+
+function responseCookies(response: Response) {
+    return response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+}
+async function addSession(role: 'admin' | 'nurse' | 'caller', tokenValue = crypto.randomUUID(), expiry = Date.now() + 3600000) {
+    database.prepare('INSERT OR IGNORE INTO workspaces(id,created_at,expires_at) VALUES(?,?,?)').run(workspaceId, Date.now(), Date.now() + 7 * 86400000);
+    const id = crypto.randomUUID();
+    database.prepare('INSERT INTO participants(id,workspace_id,role,created_at) VALUES(?,?,?,?)').run(id, workspaceId, role, Date.now());
+    database.prepare('INSERT INTO sessions(token_hash,workspace_id,participant_id,role,expires_at) VALUES(?,?,?,?,?)').run(await hash(tokenValue), workspaceId, id, role, expiry);
+    return { id, token: tokenValue };
+}
+
+describe('separate caller and staff sessions', () => {
+    it('preserves a legacy-only staff identity when a caller invitation is opened', async () => {
+        runtime.bindings = bindings({ ACCESS_ISSUER: issuer, ACCESS_AUDIENCE: audience });
+        await seedSession('admin');
+        database.prepare('INSERT INTO invitations(token_hash,workspace_id,role,expires_at) VALUES(?,?,?,?)').run(await hash(invitationToken), workspaceId, 'caller', Date.now() + 600000);
+        const response = await createSession(request({ cookie: true, data: { invitation: invitationToken } }));
+        const cookies = responseCookies(response);
+        expect(response.headers.getSetCookie()).toHaveLength(3);
+        for (const value of response.headers.getSetCookie()) expect(value).toContain('HttpOnly; SameSite=Lax; Max-Age=');
+        expect(cookies).toContain(`nb_staff_session=${sessionToken}`);
+        const caller = await session(request({ cookies, view: 'caller' }), runtime.bindings);
+        expect(caller.role).toBe('caller');
+        expect(caller.participantId).not.toBe(participantId);
+        await expect(session(request({ cookies, view: 'staff' }), runtime.bindings)).rejects.toMatchObject({ status: 403 });
+        await expect(session(request({ cookies, view: 'staff', accessToken: jwt() }), runtime.bindings)).resolves.toMatchObject({ role: 'admin', participantId });
+    });
+
+    it('preserves an existing role cookie instead of overwriting it from legacy state', async () => {
+        runtime.bindings = bindings({ APP_ORIGIN: localOrigin, ALLOW_LOCAL_SANDBOX_ENROLLMENT: 'true' });
+        const held = await addSession('admin');
+        const legacy = await addSession('admin');
+        database.prepare('INSERT INTO invitations(token_hash,workspace_id,role,expires_at) VALUES(?,?,?,?)').run(await hash(invitationToken), workspaceId, 'caller', Date.now() + 600000);
+        const response = await createSession(request({ cookies: `nb_staff_session=${held.token}; nb_session=${legacy.token}`, data: { invitation: invitationToken } }));
+        expect(response.headers.getSetCookie().some(value => value.startsWith('nb_staff_session='))).toBe(false);
+        const cookies = `${responseCookies(response)}; nb_staff_session=${held.token}`;
+        await expect(session(request({ cookies, view: 'staff' }), runtime.bindings)).resolves.toMatchObject({ participantId: held.id });
+    });
+
+    it('preserves a legacy caller when a nurse invitation is redeemed', async () => {
+        runtime.bindings = bindings({ ACCESS_ISSUER: issuer, ACCESS_AUDIENCE: audience });
+        await seedSession('caller');
+        database.prepare('INSERT INTO invitations(token_hash,workspace_id,role,expires_at) VALUES(?,?,?,?)').run(await hash(invitationToken), workspaceId, 'nurse', Date.now() + 600000);
+        const response = await createSession(request({ cookie: true, accessToken: jwt(), data: { invitation: invitationToken } }));
+        const cookies = responseCookies(response);
+        expect(cookies).toContain(`nb_caller_session=${sessionToken}`);
+        await expect(session(request({ cookies, view: 'caller' }), runtime.bindings)).resolves.toMatchObject({ role: 'caller', participantId });
+        await expect(session(request({ cookies, view: 'staff', accessToken: jwt() }), runtime.bindings)).resolves.toMatchObject({ role: 'nurse' });
+    });
+
+    it('selects two held identities independently and keeps direct requests legacy compatible', async () => {
+        runtime.bindings = bindings({ APP_ORIGIN: localOrigin, ALLOW_LOCAL_SANDBOX_ENROLLMENT: 'true' });
+        const staff = await addSession('admin'), caller = await addSession('caller');
+        const cookies = `nb_staff_session=${staff.token}; nb_caller_session=${caller.token}; nb_session=${caller.token}`;
+        await expect(session(request({ cookies, view: 'staff' }), runtime.bindings)).resolves.toMatchObject({ participantId: staff.id });
+        await expect(session(request({ cookies, view: 'caller' }), runtime.bindings)).resolves.toMatchObject({ participantId: caller.id });
+        await expect(session(request({ cookies }), runtime.bindings)).resolves.toMatchObject({ participantId: caller.id });
+        // Browser download navigations do not carry the view header.
+        await expect(session(request({ cookies }), runtime.bindings, ['admin', 'nurse'])).resolves.toMatchObject({ participantId: staff.id });
+        await expect(session(request({ cookies, view: 'caller' }), runtime.bindings, ['admin', 'nurse'])).rejects.toMatchObject({ status: 403 });
+    });
+
+    it.each(['admin', 'nurse', 'caller'] as const)('retains legacy-cookie lookup for %s', async role => {
+        runtime.bindings = bindings({ APP_ORIGIN: localOrigin, ALLOW_LOCAL_SANDBOX_ENROLLMENT: 'true' });
+        await seedSession(role);
+        await expect(session(request({ cookie: true }), runtime.bindings)).resolves.toMatchObject({ role, participantId });
+        await expect(session(request({ cookie: true, view: role === 'caller' ? 'caller' : 'staff' }), runtime.bindings)).resolves.toMatchObject({ role, participantId });
+    });
+
+    it('allows the existing admin identity to make its own caller-side call', async () => {
+        runtime.bindings = bindings({ APP_ORIGIN: localOrigin, ALLOW_LOCAL_SANDBOX_ENROLLMENT: 'true' });
+        const staff = await addSession('admin');
+        await expect(session(request({ cookies: `nb_staff_session=${staff.token}`, view: 'caller' }), runtime.bindings)).resolves.toMatchObject({ role: 'admin', participantId: staff.id });
+    });
+
+    it('does not trust role-cookie names or the view header as authorization', async () => {
+        runtime.bindings = bindings({ APP_ORIGIN: localOrigin, ALLOW_LOCAL_SANDBOX_ENROLLMENT: 'true' });
+        const staff = await addSession('admin'), caller = await addSession('caller');
+        await expect(session(request({ cookies: `nb_staff_session=${caller.token}`, view: 'staff' }), runtime.bindings)).rejects.toMatchObject({ status: 401 });
+        await expect(session(request({ cookies: `nb_caller_session=${staff.token}`, view: 'caller' }), runtime.bindings)).rejects.toMatchObject({ status: 401 });
+        await expect(session(request({ cookies: `nb_session=${caller.token}`, view: 'staff' }), runtime.bindings, ['admin'])).rejects.toMatchObject({ status: 403 });
+    });
+
+    it('ignores expired role cookies and enforces membership and hosted Access on selected staff', async () => {
+        runtime.bindings = bindings({ ACCESS_ISSUER: issuer, ACCESS_AUDIENCE: audience });
+        const expired = await addSession('admin', 'expired-staff', 1), caller = await addSession('caller');
+        const cookies = `nb_staff_session=${expired.token}; nb_session=${caller.token}`;
+        await expect(session(request({ cookies, view: 'staff' }), runtime.bindings)).resolves.toMatchObject({ role: 'caller' });
+        const staff = await addSession('admin');
+        await expect(session(request({ cookies: `nb_staff_session=${staff.token}`, view: 'staff' }), runtime.bindings)).rejects.toMatchObject({ status: 403 });
+        database.prepare('UPDATE participants SET role=? WHERE id=?').run('caller', staff.id);
+        await expect(session(request({ cookies: `nb_staff_session=${staff.token}`, view: 'staff', accessToken: jwt() }), runtime.bindings)).rejects.toMatchObject({ status: 401 });
+    });
+});
+
+describe('explicit local staff-role recovery', () => {
+    it('restores staff in the held caller workspace without replacing settings or losing the caller', async () => {
+        runtime.bindings = bindings({ APP_ORIGIN: localOrigin, ALLOW_LOCAL_SANDBOX_ENROLLMENT: 'true' });
+        await seedSession('caller');
+        const settings = JSON.stringify({ escalationDestination: 'Existing local nurse desk', revision: 7 });
+        database.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').run(settings, workspaceId);
+        database.prepare('INSERT INTO template_versions(id,workspace_id,version,body_json,created_at) VALUES(?,?,?,?,?)').run('custom', workspaceId, 3, '{"name":"Retained template"}', Date.now());
+        const response = await createSession(request({ cookie: true, data: { localStaffAccess: true } }));
+        const result = await response.json();
+        expect(result.session).toMatchObject({ workspaceId, role: 'admin' });
+        expect(count('workspaces')).toBe(1);
+        expect(count('participants')).toBe(2);
+        expect(database.prepare('SELECT settings_json FROM workspaces WHERE id=?').get(workspaceId)!.settings_json).toBe(settings);
+        expect(database.prepare('SELECT version FROM template_versions WHERE workspace_id=?').all(workspaceId)).toEqual([{ version: 3 }]);
+        const cookies = responseCookies(response);
+        await expect(session(request({ cookies, view: 'caller' }), runtime.bindings)).resolves.toMatchObject({ role: 'caller', participantId });
+        await expect(session(request({ cookies, view: 'staff' }), runtime.bindings)).resolves.toMatchObject({ role: 'admin', participantId: result.session.participantId });
+        const repeated = await createSession(request({ cookies, data: { localStaffAccess: true } }));
+        expect(repeated.status).toBe(200);
+        expect((await repeated.json()).session.participantId).toBe(result.session.participantId);
+        expect(count('participants')).toBe(2);
+        expect(count('sessions')).toBe(2);
+    });
+
+    it.each([
+        { APP_ORIGIN: hostedOrigin, ALLOW_LOCAL_SANDBOX_ENROLLMENT: 'true' },
+        { APP_ORIGIN: localOrigin },
+        { APP_ORIGIN: localOrigin, ALLOW_LOCAL_SANDBOX_ENROLLMENT: 'true', ACCESS_ISSUER: issuer },
+    ])('rejects recovery outside the explicit local sandbox, even with an invitation: %j', async configuration => {
+        runtime.bindings = bindings(configuration);
+        await seedInvitation('caller');
+        await expect(createSession(request({ data: { localStaffAccess: true, invitation: invitationToken } }))).rejects.toMatchObject({ status: 403 });
+        expect(redeemedBy()).toBeNull();
+        expect(count('participants')).toBe(0);
+    });
+
+    it('requires an existing caller or staff session and rejects cross-origin recovery', async () => {
+        runtime.bindings = bindings({ APP_ORIGIN: localOrigin, ALLOW_LOCAL_SANDBOX_ENROLLMENT: 'true' });
+        await expect(createSession(request({ data: { localStaffAccess: true, workspaceId } }))).rejects.toMatchObject({ status: 401 });
+        expect(count('workspaces')).toBe(0);
+        await seedSession('caller');
+        const incoming = request({ cookie: true, data: { localStaffAccess: true } });
+        incoming.headers.set('Origin', 'http://127.0.0.1:8787');
+        await expect(createSession(incoming)).rejects.toMatchObject({ status: 403 });
+        expect(count('participants')).toBe(1);
+    });
+
+    it('retains enrollment rate limits and Turnstile verification for recovery', async () => {
+        runtime.bindings = bindings({ APP_ORIGIN: localOrigin, ALLOW_LOCAL_SANDBOX_ENROLLMENT: 'true' });
+        await seedSession('caller');
+        const windowStart = Math.floor(Date.now() / 3600000) * 3600000;
+        database.prepare('INSERT INTO rate_limits(key,window_start,count) VALUES(?,?,?)').run('session:' + await hash('local'), windowStart, 30);
+        await expect(createSession(request({ cookie: true, data: { localStaffAccess: true } }))).rejects.toMatchObject({ status: 429 });
+        database.prepare('DELETE FROM rate_limits').run();
+        runtime.bindings.TURNSTILE_SECRET_KEY = 'local-test-only';
+        vi.mocked(fetch).mockResolvedValueOnce(Response.json({ success: false }));
+        await expect(createSession(request({ cookie: true, data: { localStaffAccess: true, turnstileToken: 'synthetic-proof' } }))).rejects.toMatchObject({ status: 403 });
+        expect(count('participants')).toBe(1);
     });
 });
