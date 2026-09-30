@@ -1,6 +1,9 @@
-import { chromium, expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { chromium, expect, test, type Browser, type BrowserContext, type Page } from './helpers/fixtures';
 import { resolve } from 'node:path';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
+import { attachAudioDiagnostics } from './helpers/audio-diagnostics';
+import { attachControlDiagnostics } from './helpers/control-diagnostics';
+import { watchTakeoverOutcomes } from './helpers/takeover-diagnostics';
 
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
 const origin = new URL(baseURL).origin;
@@ -19,7 +22,7 @@ async function snapshot(page: Page, id: string): Promise<CallSnapshot> {
 async function workspace(page: Page) {
   await page.goto(`${baseURL}/demo`);
   await page.getByRole('button', { name: 'Create local workspace' }).click();
-  await expect(page.getByText('Your isolated workspace is ready')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Call queue', exact: true })).toBeVisible();
   const session = await (await page.request.get(`${baseURL}/api/demo/session`)).json() as { mode: string; diagnostics: boolean };
   expect(session.mode, 'These regressions use fictional mock data only').toBe('mock');
   return session;
@@ -29,13 +32,13 @@ function queueItem(page: Page, id: string) {
   return page.getByRole('region', { name: 'Caller queue' }).getByRole('button').filter({ has: page.getByRole('heading', { name: label(id), exact: true }) });
 }
 
-async function audioBrowser(frequency: 440 | 660): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
+async function audioBrowser(frequency: 440 | 660, extraHTTPHeaders?: Record<string, string>): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
     args: ['--disable-crashpad-for-testing', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve(`tests/fixtures/microphone-${frequency}hz.wav`)}`, '--autoplay-policy=no-user-gesture-required'],
   });
-  const context = await browser.newContext({ baseURL, permissions: ['microphone'], viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce' });
+  const context = await browser.newContext({ baseURL, extraHTTPHeaders, permissions: ['microphone'], viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce' });
   return { browser, context, page: await context.newPage() };
 }
 
@@ -49,11 +52,14 @@ async function frequency(page: Page) {
 
 test('switching fact editors preserves the target field and context tabs support keyboard navigation', async ({ page }, testInfo) => {
   await workspace(page);
-  await page.getByRole('checkbox').check();
-  const created = page.waitForResponse(response => response.url().endsWith('/api/calls') && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Launch replay case' }).click();
-  const { call } = await (await created).json() as { call: CallSnapshot };
-  await expect(page.getByRole('button', { name: 'Replay case created' })).toBeVisible();
+  const created = await post(page, '/api/calls');
+  expect(created.status()).toBe(201);
+  const { call } = await created.json() as { call: CallSnapshot };
+  expect((await post(page, `/api/calls/${call.id}/consent`, { accepted: true })).ok()).toBe(true);
+  for (const text of [
+    'I am calling about a headache that started yesterday afternoon. It is mostly behind my eyes. I would describe it as a six out of ten.',
+    'I have not checked my temperature. I took Tylenol, but I am not sure what dose.',
+  ]) expect((await post(page, `/api/calls/${call.id}/mock-turn`, { text })).ok()).toBe(true);
   await expect.poll(async () => (await snapshot(page, call.id)).facts.length).toBeGreaterThan(3);
   await page.goto(`${baseURL}/nurse`);
   const before = await snapshot(page, call.id);
@@ -96,15 +102,18 @@ test('switching fact editors preserves the target field and context tabs support
   expect((await post(page, `/api/calls/${call.id}/end`)).ok()).toBe(true);
 });
 
-test('reviewing another case during claim and conversation preserves active audio and call-scoped controls', async ({}, testInfo) => {
-  const nurse = await audioBrowser(660);
-  const caller = await audioBrowser(440);
+test('reviewing another case during claim and conversation preserves active audio and call-scoped controls', async ({ extraHTTPHeaders }, testInfo) => {
+  const nurse = await audioBrowser(660, extraHTTPHeaders);
+  const caller = await audioBrowser(440, extraHTTPHeaders);
+  const takeoverTraffic = watchTakeoverOutcomes(nurse.page);
   const pageErrors: string[] = [];
   let releaseClaim: (() => void) | undefined;
+  let activeCallId: string | undefined;
   for (const participant of [nurse, caller]) participant.page.on('pageerror', error => pageErrors.push(error.message));
   try {
     const session = await workspace(nurse.page);
     expect(session.diagnostics).toBe(true);
+    await nurse.page.getByRole('button', { name: 'Invite a caller', exact: true }).click();
     await nurse.page.getByRole('button', { name: 'Create caller invitation' }).click();
     const invitation = nurse.page.locator('.invitation-result a');
     await expect(invitation).toBeVisible();
@@ -113,6 +122,7 @@ test('reviewing another case during claim and conversation preserves active audi
     const callCreated = caller.page.waitForResponse(response => response.url().endsWith('/api/calls') && response.request().method() === 'POST');
     await caller.page.getByRole('button', { name: 'Join call queue' }).click();
     const { call } = await (await callCreated).json() as { call: CallSnapshot };
+    activeCallId = call.id;
     await caller.page.getByRole('button', { name: 'Skip automated intake · request a person' }).click();
     await caller.page.getByRole('button', { name: 'Enable microphone & output for handoff' }).click();
     await expect.poll(async () => (await snapshot(caller.page, call.id)).mediaReady.caller).toBe(true);
@@ -134,6 +144,8 @@ test('reviewing another case during claim and conversation preserves active audi
     });
     await nurse.page.getByRole('button', { name: 'Take over call', exact: true }).click();
     await pendingClaim;
+    const statusFilter = nurse.page.getByRole('combobox', { name: 'Status', exact: true });
+    await statusFilter.selectOption('waiting');
     await queueItem(nurse.page, another.id).click();
     const draft = nurse.page.getByRole('region', { name: 'Selected intake draft' });
     await expect(draft.getByRole('heading', { name: label(another.id), exact: true })).toBeVisible();
@@ -142,6 +154,9 @@ test('reviewing another case during claim and conversation preserves active audi
     releaseClaim();
     await expect.poll(async () => (await snapshot(nurse.page, call.id)).queueState, { timeout: 20_000 }).toBe('CONNECTED');
     await expect(controls).toContainText('Human audio connected');
+    await expect(statusFilter).toHaveValue('waiting');
+    await expect(queueItem(nurse.page, call.id)).toHaveCount(0);
+    await expect(queueItem(nurse.page, another.id)).toBeVisible();
     await expect(draft.getByRole('button', { name: 'Active call in progress', exact: true })).toBeDisabled();
     await expect.poll(async () => Math.abs(await frequency(caller.page) - 660), { timeout: 15_000 }).toBeLessThan(12);
     await expect.poll(async () => Math.abs(await frequency(nurse.page) - 440), { timeout: 15_000 }).toBeLessThan(12);
@@ -150,11 +165,20 @@ test('reviewing another case during claim and conversation preserves active audi
     await expect(draft.getByRole('heading', { name: label(another.id), exact: true })).toBeVisible();
     expect((await snapshot(nurse.page, call.id)).conversationOwner).toBe('NURSE');
 
+    await statusFilter.selectOption('closed');
+    await expect(nurse.page.getByRole('heading', { name: 'No closed calls.', exact: true })).toBeVisible();
+    await expect(draft.getByRole('heading', { name: label(another.id), exact: true })).toBeVisible();
+    await expect(draft.getByText('This case is outside the current filter', { exact: true })).toBeVisible();
+    await expect.poll(async () => Math.abs(await frequency(caller.page) - 660)).toBeLessThan(12);
+    await expect.poll(async () => Math.abs(await frequency(nurse.page) - 440)).toBeLessThan(12);
+
     await controls.getByRole('button', { name: 'Mute microphone', exact: true }).click();
     await expect(controls.getByRole('button', { name: 'Unmute microphone', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await controls.getByRole('button', { name: 'Unmute microphone', exact: true }).click();
     await expect.poll(async () => Math.abs(await frequency(caller.page) - 660)).toBeLessThan(12);
     await controls.getByRole('button', { name: 'Return to active call', exact: true }).click();
+    await expect(statusFilter).toHaveValue('all');
+    await expect(queueItem(nurse.page, call.id)).toBeVisible();
     await expect(draft.getByRole('heading', { name: label(call.id), exact: true })).toBeVisible();
     await queueItem(nurse.page, another.id).click();
     await expect(draft.getByRole('heading', { name: label(another.id), exact: true })).toBeVisible();
@@ -189,7 +213,11 @@ test('reviewing another case during claim and conversation preserves active audi
     expect(pageErrors).toEqual([]);
     expect((await post(nurse.page, `/api/calls/${another.id}/end`)).ok()).toBe(true);
   } finally {
+    await attachControlDiagnostics(nurse.page, testInfo, baseURL, activeCallId);
     releaseClaim?.();
+    await takeoverTraffic.attach(testInfo);
+    await attachAudioDiagnostics(caller.page, testInfo, 'caller');
+    await attachAudioDiagnostics(nurse.page, testInfo, 'nurse');
     for (const participant of [caller, nurse]) {
       await participant.context.close();
       await participant.browser.close();

@@ -1,0 +1,17 @@
+.intake-template-editor{min-width:0}
+.template-editor-section{display:grid;gap:16px;min-width:0}
+.template-editor-section h3,.template-acknowledgments h3{font-size:14px}
+.template-editor-item{border:1px solid var(--line);border-radius:8px;margin:0;padding:12px;min-width:0}
+.template-editor-item legend{font-size:12px;font-weight:600;padding:0 5px;max-width:100%;overflow-wrap:anywhere}
+.template-item-actions,.template-editor-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.template-item-actions .button,.template-editor-actions .button{white-space:normal}
+.template-add-question{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;min-width:0}
+.template-add-question>div{flex:1 1 190px;min-width:0}
+.template-add-question select{min-width:0;font-size:13px}
+.template-acknowledgment>.button{margin-top:8px}
+.template-editor-actions{margin-top:0}
+.template-acknowledgments{margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
+.template-acknowledgments ul{margin:10px 0 0;padding-left:20px;display:grid;gap:8px;font-size:13px;overflow-wrap:anywhere}
+.template-summary-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px;flex-wrap:wrap}
+.template-summary-heading h3{min-width:0;overflow-wrap:anywhere}
+@media(max-width:420px){.template-item-actions .button{flex:1 1 auto}.template-add-question>.button{width:100%}}

@@ -13,3 +13,47 @@
 @media(max-width:900px){.sidebar{width:64px}.application-main{margin-left:64px}.nav-icon.active:before{left:-10px}.topbar{height:65px;padding:0 20px}.topbar-divider{display:none}.topbar-right{gap:12px}.mode-label{font-size:9px;letter-spacing:.4px}.page{padding:24px 20px 0}.page-header{align-items:flex-start}.page-header h1{font-size:29px}.page-header-action{flex-direction:column;align-items:flex-end}.workspace-status{gap:15px;flex-wrap:wrap}.workspace-status .right{margin-left:0}.nurse-grid{grid-template-columns:205px minmax(300px,1fr);gap:12px}.case-toolbar{align-items:flex-start;flex-direction:column}.case-toolbar p{max-width:none}.caller-layout{grid-template-columns:1fr}.caller-aside{display:none}.caller-page{max-width:650px}.demo-hero{grid-template-columns:1fr;padding:28px}.demo-hero h1{font-size:35px}.demo-flow{display:none}.demo-grid,.settings-grid{grid-template-columns:1fr}.demo-checklist{gap:15px}.simulation-banner{font-size:11px;padding:7px 12px}.app-footer{padding-left:20px;padding-right:20px}}
 @media(max-width:680px){.sidebar{inset:auto 0 0;width:100%;height:62px;padding:0;background:#fff;border-top:1px solid var(--line);flex-direction:row;justify-content:center}.sidebar nav{display:flex;justify-content:space-around;gap:0;height:100%}.nav-icon{width:25%;height:100%;border-radius:0;color:#728171;display:flex;flex-direction:column;gap:3px}.nav-icon span{position:static;opacity:1;background:none;color:inherit;padding:0;font-size:9px;white-space:normal;box-shadow:none}.nav-icon.active,.nav-icon:hover{background:#edf4ed;color:var(--teal)}.nav-icon.active:before{display:none}.brand-symbol,.sidebar-foot{display:none}.application-main{margin-left:0;padding-bottom:62px}.topbar{height:59px;padding:0 18px}.wordmark{font-size:21px}.topbar-right .avatar{display:none}.mode-label{font-size:8px;max-width:120px;line-height:1.4}.simulation-banner{font-size:10px;text-align:left;align-items:flex-start;padding:8px 14px}.simulation-banner svg{margin-top:1px}.page{padding:22px 16px 0}.page-header{margin-bottom:21px;gap:12px}.page-header h1{font-size:27px}.page-header p{font-size:12px}.page-header .eyebrow{font-size:9px}.page-header-action .button{font-size:11px;padding:8px 11px;min-height:35px}.workspace-status{font-size:11px;gap:13px;padding-bottom:14px}.workspace-status .right{width:100%;font-size:10px}.mobile-panel-tabs{display:flex;margin-bottom:14px;border-bottom:1px solid var(--line);gap:25px}.mobile-panel-tabs button{padding:8px 2px 10px;font-size:12px;color:var(--muted);border-bottom:2px solid transparent}.mobile-panel-tabs button.active{color:var(--teal);border-color:var(--teal);font-weight:600}.nurse-grid{display:block}.nurse-grid>.panel{display:none}.nurse-grid>.panel.mobile-visible{display:block}.queue-panel,.case-panel,.evidence-panel{min-height:370px}.evidence-content{max-height:none}.queue-item{padding:15px}.queue-item .queue-reason{-webkit-line-clamp:1}.case-toolbar{flex-direction:row;align-items:center}.case-toolbar p{max-width:150px}.case-heading h2{font-size:22px}.fact-value{font-size:15px}.case-panel,.queue-panel,.evidence-panel{border-radius:9px}.caller-main{padding:24px 20px}.caller-page .page-header{margin-bottom:20px}.caller-heading h2{font-size:22px}.caller-orb{width:73px;height:73px}.caption-text{font-size:17px}.call-control{min-width:61px}.call-control>span:first-child{width:43px;height:43px}.demo-hero{padding:25px 22px;margin-bottom:18px}.demo-hero h1{font-size:31px}.demo-hero p{font-size:13px}.demo-checklist{grid-template-columns:1fr;padding:23px 4px;gap:22px}.demo-step{padding:20px}.scenario-card{padding:20px}.settings-page .page-header{display:block}.settings-page .page-header-action{margin-top:15px;align-items:flex-start}.welcome-card{margin:35px 17px;padding:30px 23px}.welcome-card h1{font-size:32px}.welcome-card .text-link{display:flex;margin:16px 0 0}.escalation-strip{align-items:flex-start;flex-wrap:wrap}.app-footer{font-size:10px;padding:20px 18px}.small-actions .button{white-space:normal}.setting-line{gap:12px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* Keep recovery states and controls usable with keyboards, zoom, and touch. */
+#main-content:focus{outline:none}
+.nav-icon:focus-visible span{opacity:1;pointer-events:none}
+.notice>div{min-width:0;overflow-wrap:anywhere}
+.notice .text-link{margin-top:8px}
+.page-header>div,.panel-heading>div,.setting-line>div{min-width:0}
+.welcome-card .button{white-space:normal;text-align:center}
+.queue-item h3,.fact-value,.approved-copy,.transcript-bubble{overflow-wrap:anywhere}
+.queue-status-filter{margin-top:14px;min-width:0}
+.queue-status-filter .field-label{margin:0 0 6px;font-size:12px}
+.queue-status-filter select{width:100%;min-width:0;font-size:12px}
+.queue-timing{display:flex;flex-direction:column;align-items:flex-start;gap:4px;margin-top:10px}
+.queue-timing time{overflow-wrap:anywhere}
+.queue-state-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.queue-channel{font-size:9px;color:var(--muted)}
+.queue-detail{font-size:11px;line-height:1.45;color:var(--muted);margin-top:7px;overflow-wrap:anywhere}
+.queue-detail.attention{color:var(--red)}
+.case-filter-notice{padding:16px 20px 0}
+.case-filter-notice .text-link{display:block;margin-top:8px}
+@media(max-width:680px){
+  .sidebar{height:calc(66px + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom)}
+  .application-main{padding-bottom:calc(66px + env(safe-area-inset-bottom))}
+  .nav-icon span{font-size:11px;line-height:1.2}
+  .button,.button.small,.page-header-action .button,.mobile-panel-tabs button,.evidence-tabs button{min-height:44px}
+  .text-link,.evidence-link{min-height:36px;align-items:center}
+  input.text-input,textarea.text-input,select.text-input{font-size:16px}
+  .call-control>span:first-child{width:46px;height:46px}
+  .case-toolbar,.panel-heading,.settings-actions{flex-wrap:wrap}
+  .mobile-panel-tabs{gap:12px;justify-content:space-between}
+}
+
+/* The caller is a separate product surface, without staff navigation. */
+.caller-application .application-main{margin-left:0;padding-bottom:0}
+.caller-application .topbar{max-width:1120px;margin:0 auto;border-bottom:0}
+.caller-application .simulation-banner{border-top:1px solid var(--line)}
+.caller-application .app-footer{max-width:1024px;margin:0 auto}
+.caller-header-label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+@media(max-width:680px){
+  .staff-application .sidebar nav{width:100%}
+  .staff-application .nav-icon{width:50%}
+  .caller-header-label{font-size:11px;max-width:150px;line-height:1.35}
+  .caller-application .topbar{gap:15px}
+}

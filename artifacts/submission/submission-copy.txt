@@ -1,0 +1,36 @@
+NurseBridge - LabLab form copy
+Updated September 29, 2026. Local draft; final source access, demo URL and event form are pending.
+
+### Project title
+
+NurseBridge
+
+### Short description
+
+NurseBridge uses AssemblyAI Voice Agent to turn a fictional caller's story into an intake draft with supporting quotes, corrections, and uncertainty, then connects a nurse to the same audio session for human review.
+
+### Long description
+
+A nurse joining a call needs context: what the caller said, what changed, and what still needs clarification. NurseBridge explores how a voice agent can prepare that context while keeping a human responsible for the conversation.
+
+In our fictional demonstration, a caller joins a queue and chooses whether to begin automated intake. AssemblyAI Voice Agent handles the spoken conversation. NurseBridge turns finalized caller statements into a structured draft with exact supporting quotes. If the caller corrects “yesterday” to “this morning,” the nurse can see the current answer and its revision history. Answers such as “I haven't checked my temperature” remain explicitly not measured. The system asks one clarification for an unresolved answer, then requests nurse help if the uncertainty remains.
+
+The central interaction is human takeover. A nurse claims the call, enables audio, and joins the same session. NurseBridge clears queued agent audio and checks playback in both directions before showing the human connection as ready. The waiting period and nurse conversation are not forwarded to the AI provider. Callers who decline automated intake retain access to the nurse queue.
+
+AssemblyAI provides the conversation and speech layer, configured with Nebius Nemotron-3.5-Lightning. A separate extraction step validates facts against finalized caller evidence. Next.js runs on Cloudflare Workers through OpenNext, and a Durable Object coordinates each call. D1 stores workspace records and projections, while private R2 storage holds case exports.
+
+The browser workflow runs locally. A September 29 fictional local test exercised the real AssemblyAI and Nebius integration through transcript finalization, evidence extraction, an agent reply, and nurse takeover, with non-silent human-channel playback measured in both browser worklets. The supplied walkthrough was refreshed September 29 and is clearly labeled transcript replay with providers off. An optional Twilio inbound adapter is included in the source and has local protocol and browser audio test coverage; real telephone-network acceptance remains pending.
+
+NurseBridge is a simulation using fictional information. It does not diagnose, recommend treatment, assess clinical urgency, or establish that waiting is safe. Public live AI remains blocked while provider recording controls and physical-device behavior await verification. Our next step is to validate the workflow with nurses using fictional scenarios and measure draft quality, correction handling, and handoff reliability before considering a clinical pilot.
+
+### Technology and category tags
+
+Suggested technology tags: AssemblyAI, Voice Agent, Nebius, NVIDIA Nemotron, TypeScript, Next.js, Cloudflare Workers, Durable Objects, D1, R2, Web Audio, WebSockets, Twilio.
+
+Suggested category tags: Voice AI, Healthcare, Workflow Automation, Human-in-the-loop. Select the closest tags actually offered by the form.
+
+
+Repository: https://github.com/Xuefeng-Zhu/NurseBridge (private, verified September 29; must be made judge-accessible before entry)
+Interactive application URL: TODO — no verified public deployment URL
+Final event form and registration: not yet verified
+Deadline: September 30, 2026 at 8:00 AM PDT (15:00 UTC), verified on rendered event page September 29

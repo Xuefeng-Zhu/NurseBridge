@@ -1,0 +1,65 @@
+{
+  "verifiedOn": "2026-09-29",
+  "sourceRevision": "743cce2ef548ebd5fcfaca1075a4f78803ddc72b",
+  "environment": "Loopback local app with live AssemblyAI and configured Nebius extraction",
+  "browser": "Playwright Chromium headless shell with repository recorded microphone fixtures",
+  "runner": {
+    "result": "passed",
+    "tests": 1,
+    "durationSeconds": 30.8,
+    "browsersAndRunnerExited": true
+  },
+  "finalizedCallerTurns": 1,
+  "evidenceLinkedFacts": 1,
+  "assistantTurns": 3,
+  "agentRespondedAfterCaller": true,
+  "speechStartToFinalTranscriptMs": 1299,
+  "timings": {
+    "firstAudioReadyMs": 931,
+    "firstAudioPlaybackMs": 963,
+    "extractionMs": 1310,
+    "handoffMs": 156
+  },
+  "callerAudio": {
+    "receivedFrames": 1028,
+    "playedSamples": 494848,
+    "rms": 0.11721728795527478,
+    "underruns": 3,
+    "droppedFrames": 0,
+    "queuedSamples": 2176,
+    "dominantFrequency": 675,
+    "zeroCrossings": 36,
+    "controlEpoch": 2,
+    "agentSamplesInEpoch": 0,
+    "humanSamplesInEpoch": 2560
+  },
+  "nurseAudio": {
+    "receivedFrames": 4,
+    "playedSamples": 4864,
+    "rms": 0.0899731367171688,
+    "underruns": 0,
+    "droppedFrames": 0,
+    "queuedSamples": 4672,
+    "dominantFrequency": 444.07894736842104,
+    "zeroCrossings": 45,
+    "controlEpoch": 2,
+    "agentSamplesInEpoch": 0,
+    "humanSamplesInEpoch": 4864
+  },
+  "cleanup": {
+    "queueState": "CLOSED",
+    "deleted": true,
+    "owner": "NONE",
+    "providerStatus": "ended",
+    "pendingProviderDeletions": 0,
+    "unresolvedProviderConnections": 0,
+    "deleteRequestAccepted": true,
+    "subsequentReadUnavailable": true
+  },
+  "limitations": [
+    "One fictional local observation, not a latency or reliability guarantee.",
+    "Recorded microphone inputs; physical-device audibility and echo were not measured.",
+    "Provider deletion is logical API deletion, not physical erasure or backup-expiry proof.",
+    "No PSTN call, hosted deployment or clinical acceptance was exercised."
+  ]
+}

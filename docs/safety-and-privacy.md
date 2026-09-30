@@ -26,9 +26,9 @@ The application does not store the phone caller's `From` number. Twilio receives
 
 ## Retention and deletion
 
-Case content expires after seven days. Administrators can delete a case sooner. Durable Object alarms erase case content, project deletion to D1, and retry R2 export deletion. Tombstones prevent a delayed projection from recreating deleted content. Previously downloaded exports are outside application control.
+Case content defaults to seven days. Administrators can select 1–30 days for new cases and their exports; existing cases retain their expiry. Administrators can delete a case sooner. Durable Object alarms erase case content, project deletion to D1, and retry R2 export deletion. Tombstones prevent a delayed projection from recreating deleted content. Previously downloaded exports are outside application control.
 
-The seven-day content policy is not a claim that every operational record is purged. Workspace membership, expired authentication records, initialization/quota ledgers, deletion tombstones, provider cleanup records, and minimal phone receipts have separate operational purposes. This release does not implement a complete metadata retention and purge policy. Deletion may retain the identifiers needed to finish carrier termination or provider cleanup.
+The configured case-content policy is not a claim that every operational record is purged. Workspace membership, expired authentication records, initialization/quota ledgers, deletion tombstones, provider cleanup records, and minimal phone receipts have separate operational purposes. This release does not implement a complete metadata retention and purge policy. Deletion may retain the identifiers needed to finish carrier termination or provider cleanup.
 
 Provider sessions have a durable cleanup queue that requests session soft deletion and retries failures. A provider session whose identity was never received requires operator reconciliation. Successful soft deletion does not establish physical erasure, backup expiration, or account retention compliance. Provider recording controls remain unverified, and public AI activation is blocked in code.
 

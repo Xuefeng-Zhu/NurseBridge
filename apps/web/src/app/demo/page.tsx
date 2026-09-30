@@ -1,2 +1,2 @@
 import { redirect } from "next/navigation";
-export default function DemoRedirect() { redirect("/workspace"); }
+export default function DemoRedirect() { redirect("/nurse"); }

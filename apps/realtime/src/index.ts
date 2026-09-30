@@ -26,7 +26,14 @@ export function providerHealth(env: Env) {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === '/health') return Response.json(providerHealth(env), { headers: { 'Cache-Control': 'no-store' } });
+    if (url.pathname === '/health') {
+      let phoneNumbers: string[] = [];
+      // Workspace inventory is available only through the private service binding.
+      if (url.hostname === 'internal' && url.searchParams.has('workspaceId')) {
+        try { phoneNumbers = Object.entries(JSON.parse(env.TWILIO_INBOUND_ROUTES ?? '{}')).filter(([, id]) => id === url.searchParams.get('workspaceId')).map(([number]) => number); } catch { /* Unconfigured. */ }
+      }
+      return Response.json({ ...providerHealth(env), phoneNumbers }, { headers: { 'Cache-Control': 'no-store' } });
+    }
     if (url.pathname.startsWith('/phone/')) {
       const response = await handlePhoneRequest(request, env);
       if (response) return response;

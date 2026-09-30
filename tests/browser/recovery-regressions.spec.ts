@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './helpers/fixtures';
 import type { CallSnapshot, DemoSettings } from '../../packages/contracts/src/index';
 
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
@@ -11,9 +11,14 @@ async function workspace(page: Page, route = '/caller') {
 }
 
 async function join(page: Page): Promise<CallSnapshot> {
-  const created = page.waitForResponse(response => new URL(response.url()).pathname === '/api/calls' && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Join call queue' }).click();
-  const response = await created;
+  const button = page.getByRole('button', { name: 'Join call queue' });
+  await expect(button).toBeEnabled();
+  // Observe both promises together so a failed click cannot leave an unhandled
+  // response wait that hides the actual actionability failure.
+  const [response] = await Promise.all([
+    page.waitForResponse(response => new URL(response.url()).pathname === '/api/calls' && response.request().method() === 'POST'),
+    button.click(),
+  ]);
   expect(response.status()).toBe(201);
   return (await response.json()).call as CallSnapshot;
 }
@@ -74,6 +79,12 @@ test('caller restoration retries failed list and detail reads without creating a
 test('caller closes terminal calls from polling and deletion events and removes recovery controls', async ({ page }) => {
   await workspace(page);
   const owned = new Set<string>();
+  let staleProjection: CallSnapshot | undefined;
+  // Keep interception enabled for the whole scenario: removing its last route
+  // while a new connection ticket starts can strand that browser request.
+  await page.route(`${baseURL}/api/calls`, route => route.request().method() === 'GET' && staleProjection
+    ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ calls: [staleProjection] }) })
+    : route.continue());
   try {
     const closed = await join(page); owned.add(closed.id);
     await expect(page.locator('.audio-state').getByText('connected', { exact: true })).toBeVisible();
@@ -85,10 +96,16 @@ test('caller closes terminal calls from polling and deletion events and removes 
     await expect(page.getByRole('button', { name: 'Leave queue & end call' })).toHaveCount(0);
     await expect(page.getByText('Your place in the queue is preserved.', { exact: true })).toHaveCount(0);
 
+    let retiredProjection = closed;
     for (const via of ['poll', 'socket'] as const) {
+      // D1 projection can lag the authoritative CLOSED/deleted state. Starting
+      // another call must dismiss this known terminal case even if listed active.
+      staleProjection = retiredProjection;
       await page.getByRole('button', { name: 'Start another call' }).click();
       const deleted = await join(page); owned.add(deleted.id);
+      expect(deleted.id).not.toBe(retiredProjection.id);
       await expect(page.locator('.audio-state').getByText('connected', { exact: true })).toBeVisible();
+      staleProjection = undefined;
       if (via === 'poll') {
         await page.evaluate(() => (window as unknown as { __nursebridge: { close(): void } }).__nursebridge.close());
       } else {
@@ -106,10 +123,15 @@ test('caller closes terminal calls from polling and deletion events and removes 
       await page.unroute(`${baseURL}/api/calls/${deleted.id}`);
       await expect.poll(async () => (await calls(page)).some(call => call.id === deleted.id)).toBe(false);
       if (via === 'poll') {
+        // An explicit deleted-call link must win over a different case that
+        // the queue projection still reports as active after a full reload.
+        staleProjection = retiredProjection;
         await page.goto(`${baseURL}/caller?call=${deleted.id}`);
         await expect(page.getByRole('heading', { name: 'Your call was deleted.' })).toBeVisible();
         await expect(page.getByRole('button', { name: 'Join call queue' })).toHaveCount(0);
+        staleProjection = undefined;
       }
+      retiredProjection = deleted;
     }
   } finally {
     await page.unrouteAll({ behavior: 'ignoreErrors' });
@@ -120,19 +142,20 @@ test('caller closes terminal calls from polling and deletion events and removes 
 test('settings cancel discards template changes and each save preserves the other draft', async ({ page }) => {
   await workspace(page, '/settings');
   const initial = await settings(page);
-  await page.getByRole('button', { name: 'Create next version' }).click();
+  await page.getByRole('button', { name: 'Edit template' }).click();
   await page.getByLabel('Template name', { exact: true }).fill('Unpublished fictional template');
   await page.getByLabel('Approved opening question').fill('What fictional information would you like to share?');
   await page.getByLabel('Staff destination').fill('Synthetic recovery QA queue');
   await page.getByRole('button', { name: 'Save destination', exact: true }).click();
   await expect(page.getByText('Workspace settings saved.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Cancel editing' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
   await expect(page.getByLabel('Template name', { exact: true })).toHaveValue('Unpublished fictional template');
   await expect(page.getByLabel('Approved opening question')).toHaveValue('What fictional information would you like to share?');
   expect((await settings(page)).template).toEqual(initial.template);
 
-  await page.getByRole('button', { name: 'Cancel editing' }).click();
-  await page.getByRole('button', { name: 'Create next version' }).click();
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('button', { name: 'Discard template changes' }).click();
+  await page.getByRole('button', { name: 'Edit template' }).click();
   await expect(page.getByLabel('Template name', { exact: true })).toHaveValue(initial.template.name);
   await expect(page.getByLabel('Approved opening question')).toHaveValue(initial.template.opening);
   await page.getByLabel('Template name', { exact: true }).fill('Published fictional recovery template');
@@ -141,8 +164,13 @@ test('settings cancel discards template changes and each save preserves the othe
   const externalUpdate = await page.request.patch(`${baseURL}/api/settings`, { headers: { Origin: origin }, data: { escalationDestination: 'Externally updated fictional queue' } });
   expect(externalUpdate.status()).toBe(200);
   const publishRequest = page.waitForRequest(request => new URL(request.url()).pathname === '/api/settings' && request.method() === 'PATCH');
-  await page.getByRole('button', { name: 'Publish next template version' }).click();
+  await page.getByRole('button', { name: 'Save template' }).click();
   expect((await publishRequest).postDataJSON()).not.toHaveProperty('escalationDestination');
+  await expect(page.getByRole('main').getByRole('alert')).toContainText('Settings changed in another session');
+  await page.getByRole('button', { name: 'Refresh settings & status' }).click();
+  await expect(page.getByText('Settings refreshed. Unsaved drafts were preserved; review them before saving.', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Template name', { exact: true })).toHaveValue('Published fictional recovery template');
+  await page.getByRole('button', { name: 'Save template', exact: true }).click();
   await expect(page.getByText(`Template version ${initial.template.version + 1} published for new calls. Active calls retain their original template.`)).toBeVisible();
   const published = await settings(page);
   expect(published.template.name).toBe('Published fictional recovery template');

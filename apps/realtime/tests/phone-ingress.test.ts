@@ -7,7 +7,7 @@ import phoneSchema from '../../../packages/database/migrations/0002_phone_inboun
 import type { Env } from '../src/env';
 import { handlePhoneRequest } from '../src/telephony/ingress';
 import { authenticateTwilio, publicPhoneOrigin, releasePhoneReservation, terminatePhoneCall } from '../src/telephony/twilio';
-import type { CallSnapshot } from '@nursebridge/contracts';
+import { RECORDING_DISCLOSURE_VERSION, type CallSnapshot } from '@nursebridge/contracts';
 import * as readiness from '../src/providers/readiness';
 
 const bindings = env as unknown as Env;
@@ -139,7 +139,7 @@ describe('signed inbound telephone admission', () => {
     const first = await send('/phone/twilio/voice', parameters(), options);
     expect(await first.text()).toContain('<Gather'); expect(initializePhone).toHaveBeenCalledOnce(); expect(phoneConsent).not.toHaveBeenCalled(); expect(await rows('audio_reservations')).toHaveLength(0);
     const accepted = await send('/phone/twilio/consent', parameters(sid(), { Digits: '1' }), options);
-    expect(accepted.status).toBe(200); expect(phoneConsent).toHaveBeenLastCalledWith(expect.objectContaining({ decision: 'accepted', recordingAccepted: true, disclosureVersion: 'voice-agent-recording-v1' }));
+    expect(accepted.status).toBe(200); expect(phoneConsent).toHaveBeenLastCalledWith(expect.objectContaining({ decision: 'accepted', recordingAccepted: true, disclosureVersion: RECORDING_DISCLOSURE_VERSION }));
     expect(await rows('audio_reservations')).toHaveLength(1);
     await send('/phone/twilio/consent', parameters(sid(), { Digits: '1' }), options);
     expect(await rows('audio_reservations')).toHaveLength(1);
@@ -277,5 +277,29 @@ describe('signed inbound telephone admission', () => {
     await expect(terminatePhoneCall(config(), '../../Calls')).rejects.toThrow('configuration');
     transport.fetch.mockImplementationOnce(async () => new Response('private provider details', { status: 500 }));
     await expect(terminatePhoneCall(config({ TWILIO_HTTP: transport as unknown as Fetcher }), sid())).rejects.toThrow('could not be confirmed');
+  });
+});
+
+describe('workspace phone configuration', () => {
+  it('rejects disabled inbound calls before creating a receipt', async () => {
+    await bindings.DB.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').bind(JSON.stringify({ phoneEnabled: false }), workspace).run();
+    expect((await send()).status).toBe(403);
+    expect(await rows('inbound_calls')).toHaveLength(0);
+  });
+  it('pins phone retention and destination across webhook retries and settings changes', async () => {
+    await bindings.DB.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').bind(JSON.stringify({ retentionDays: 30, escalationDestination: 'West wing nurses', automatedIntake: false, recordingAllowed: false }), workspace).run();
+    const response = await send();
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('Human-request destination: West wing nurses.');
+    const first = await snapshot();
+    expect(first.expiresAt - first.createdAt).toBe(30 * 86400000);
+    expect(first.workspacePreferences).toMatchObject({ retentionDays: 30, escalationDestination: 'West wing nurses', automatedIntake: false });
+    await bindings.DB.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').bind(JSON.stringify({ retentionDays: 1, escalationDestination: 'Changed destination', phoneEnabled: false }), workspace).run();
+    expect((await send()).status).toBe(200);
+    const retried = await snapshot();
+    expect(retried.workspacePreferences).toEqual(first.workspacePreferences);
+    expect(retried.expiresAt).toBe(first.expiresAt);
+    const row = await bindings.DB.prepare('SELECT expires_at FROM workspaces WHERE id=?').bind(workspace).first<{expires_at: number}>();
+    expect(row!.expires_at).toBeGreaterThanOrEqual(first.expiresAt);
   });
 });

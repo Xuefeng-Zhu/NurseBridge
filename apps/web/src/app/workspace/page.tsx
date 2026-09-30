@@ -1,2 +1,2 @@
-import { DemoPage } from "../../components/demo";
-export default function WorkspaceGuide() { return <DemoPage />; }
+import { redirect } from "next/navigation";
+export default function WorkspaceRedirect() { redirect("/nurse"); }

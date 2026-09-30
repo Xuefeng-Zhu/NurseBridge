@@ -1,6 +1,10 @@
 import { ZodError } from 'zod';
 export class HttpError extends Error {
-    constructor(public status: number, message: string) { super(message); }
+    readonly code?: string;
+    constructor(public status: number, message: string, code?: unknown) {
+        super(message);
+        if (typeof code === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(code)) this.code = code;
+    }
 }
 export function json(data: unknown, status = 200, headers: HeadersInit = {}) { return Response.json(data, { status, headers: { 'Cache-Control': 'private, no-store', ...headers } }); }
 export async function body(request: Request): Promise<Record<string, unknown>> { if (Number(request.headers.get('content-length') ?? 0) > 32768)
@@ -19,7 +23,7 @@ export function endpoint(fn: (request: Request, context: any) => Promise<Respons
 }
 catch (error) {
     if (error instanceof HttpError)
-        return json({ error: error.message }, error.status);
+        return json({ error: error.message, ...(error.code ? { code: error.code } : {}) }, error.status);
     if (error instanceof ZodError)
         return json({ error: 'Invalid request fields' }, 400);
     return json({ error: 'The operation could not be completed. Please retry.' }, 503);
@@ -30,6 +34,7 @@ export function unwrap<T extends {
     const failure = result as unknown as {
         status?: number;
         error?: string;
+        code?: unknown;
     };
-    throw new HttpError(failure.status ?? 503, failure.error ?? 'Session unavailable');
+    throw new HttpError(failure.status ?? 503, failure.error ?? 'Session unavailable', failure.code);
 } return result; }

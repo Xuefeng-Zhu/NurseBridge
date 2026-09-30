@@ -8,8 +8,11 @@ deliberately labelled as a mock replay; it is not a recording of live patient ca
 from __future__ import annotations
 
 import json
+import argparse
+import shutil
 import subprocess
 import tempfile
+import textwrap
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -147,7 +150,7 @@ def title_card(index: int, title: str, body: str, final: bool = False) -> Image.
                    (202, 141, 1315, 862), canvas, None)
     else:
         screenshot(SOURCES / "human-handoff.png", (1110, 258, 1810, 793),
-                   (355, 288, 1370, 930), canvas, None)
+                   (110, 302, 1408, 759), canvas, None)
     return canvas
 
 
@@ -172,8 +175,8 @@ def evidence_card() -> Image.Image:
            font=font(18, True), fill=MUTED)
     src = Image.open(SOURCES / "nurse-evidence.png").convert("RGB")
     # Left: current draft and its explicit uncertainty. Right: revision history.
-    left = src.crop((369, 650, 1047, 1516))
-    right = src.crop((1063, 355, 1408, 1013))
+    left = src.crop((385, 778, 1060, 1570))
+    right = src.crop((1090, 376, 1408, 675))
     left = ImageOps.contain(left, (700, 677), Image.Resampling.LANCZOS)
     right = ImageOps.contain(right, (355, 677), Image.Resampling.LANCZOS)
     canvas.paste(left, (741, 209))
@@ -206,12 +209,18 @@ def render_slide(index: int) -> Image.Image:
         return ordinary(5, "05 / TAKEOVER", "A person joins the same call.",
                         "The nurse takes over with two-way browser audio. Both sides see when the human connection is ready.",
                         "Automated provider forwarding stops after takeover.",
-                        "human-handoff.png", (355, 288, 1370, 1006))
+                        "human-handoff.png", (110, 302, 1408, 759))
     return title_card(6, "Human review stays in control.",
                       "NurseBridge prepares context. It does not diagnose, triage, or decide that waiting is safe.", True)
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--silent", action="store_true", help="Render only the visual montage (no macOS say required).")
+    parser.add_argument("--preview-dir", type=Path, help="Also save the seven slide PNGs for visual inspection.")
+    args = parser.parse_args()
+    if not args.silent and not shutil.which("say"):
+        raise SystemExit("Narration requires macOS say. Use --silent for a visual-only render.")
     DEST.mkdir(parents=True, exist_ok=True)
     missing = [p for p in (DEST / "demo-landing.png", DEST / "workspace-ready.png", SOURCES / "caller-intake.png",
                             SOURCES / "nurse-evidence.png", SOURCES / "human-handoff.png") if not p.exists()]
@@ -221,6 +230,12 @@ def main() -> None:
     labels = ["title", "workspace", "caller", "nurse queue", "evidence", "human takeover", "closing"]
     timeline = []
     elapsed = 0
+    narration = [line.split("|")[3].strip() for line in (DEST / "narration.md").read_text().splitlines()
+                 if line.startswith("| ") and line.split("|")[1].strip().isdigit()]
+    if len(narration) != len(durations):
+        raise SystemExit("narration.md must contain one voiceover row per scene.")
+    if args.preview_dir:
+        args.preview_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="nursebridge-demo-") as tmpstr:
         tmp = Path(tmpstr)
         clips = []
@@ -228,6 +243,8 @@ def main() -> None:
             slide = tmp / f"scene-{i}.png"
             clip = tmp / f"scene-{i}.mp4"
             render_slide(i).save(slide, optimize=True)
+            if args.preview_dir:
+                shutil.copy2(slide, args.preview_dir / slide.name)
             # A slight push-in gives the genuine browser captures motion while
             # preserving readable labels and avoiding a fake screen recording.
             vf = ("zoompan=z='min(zoom+0.00003,1.012)':"
@@ -247,6 +264,36 @@ def main() -> None:
         output = DEST / "nursebridge-demo-silent.mp4"
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat",
                         "-safe", "0", "-i", str(listfile), "-c", "copy", str(output)], check=True)
+        if not args.silent:
+            audio_clips, subtitles = [], []
+            def timestamp(seconds: float) -> str:
+                ms = round(seconds * 1000)
+                return f"{ms // 3600000:02}:{ms // 60000 % 60:02}:{ms // 1000 % 60:02},{ms % 1000:03}"
+            for i, (voiceover, scene) in enumerate(zip(narration, timeline)):
+                words, speech, audio = tmp / f"voice-{i}.txt", tmp / f"voice-{i}.aiff", tmp / f"audio-{i}.wav"
+                words.write_text(voiceover)
+                subprocess.run(["say", "-v", "Samantha", "-r", "168", "-f", str(words), "-o", str(speech)], check=True)
+                length = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                                       "-of", "default=noprint_wrappers=1:nokey=1", str(speech)], text=True))
+                duration = scene["end"] - scene["start"]
+                if length + 0.8 > duration - 0.2:
+                    raise SystemExit(f"Scene {i + 1} narration is too long; shorten the text or increase its duration.")
+                subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(speech),
+                                "-af", f"adelay=800,apad,atrim=0:{duration}", "-ar", "48000", "-ac", "1", str(audio)], check=True)
+                audio_clips.append(audio)
+                subtitles.append(f"{i + 1}\n{timestamp(scene['start'] + 0.8)} --> {timestamp(scene['start'] + 0.8 + length)}\n"
+                                 + "\n".join(textwrap.wrap(voiceover, width=54)) + "\n")
+            srt = DEST / "nursebridge-demo.srt"
+            srt.write_text("\n".join(subtitles))
+            audio_list = tmp / "audio.txt"
+            audio_list.write_text("".join(f"file '{p}'\n" for p in audio_clips))
+            final = DEST / "nursebridge-demo.mp4"
+            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(output), "-f", "concat",
+                            "-safe", "0", "-i", str(audio_list), "-i", str(srt), "-map", "0:v", "-map", "1:a", "-map", "2:s",
+                            "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-c:s", "mov_text", "-metadata:s:s:0", "language=eng",
+                            "-movflags", "+faststart", "-t", str(elapsed), str(final)], check=True)
+            output.unlink()
+            output = final
     (DEST / "scene-timings.json").write_text(json.dumps({"duration_seconds": elapsed, "scenes": timeline}, indent=2) + "\n")
     print(output)
 

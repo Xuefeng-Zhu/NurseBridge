@@ -63,7 +63,7 @@ A successful session soft-delete response is not proof of physical erasure or ba
 
 ## Backups, restoration and retention
 
-The application erases seven-day case content through Durable Object alarms and retries D1/R2/provider cleanup. Operator metadata and minimal replay/termination receipts have not yet received a complete automatic purge policy. Track this separately from content expiry.
+The application erases case content at its captured expiry (seven days by default, configurable from 1–30 days for new cases) through Durable Object alarms and retries D1/R2/provider cleanup. Operator metadata and minimal replay/termination receipts have not yet received a complete automatic purge policy. Track this separately from content expiry.
 
 Define recovery objectives and access-controlled backup policies for D1, Durable Object state, and R2 before production use. Restoration must account for all three and the external providers. A D1-only restore is not a complete call recovery.
 

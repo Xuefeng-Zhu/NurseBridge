@@ -12,6 +12,24 @@ describe('evidence and bounded intake policy',()=>{
  it('keeps not asked in collection status but never accepts it as an evidenced proposed fact',()=>{const t=turn('It started yesterday.');const x=mockExtraction(t);expect(FactStatusSchema.parse('not_asked')).toBe('not_asked');expect(ProposedFactSchema.shape.status.options).not.toContain('not_asked');expect(()=>validateExtraction({...x,facts:[{...x.facts[0],status:'not_asked'}]},[t],DEFAULT_TEMPLATE)).toThrow();});
  it('stops after one unsuccessful clarification',()=>{expect(nextQuestion(DEFAULT_TEMPLATE,[],['reason','reason'])).toBe('onset')});
  it('uses explicit denial only when stated',()=>{expect(mockExtraction(turn('No other symptoms.')).facts[0].status).toBe('denied')});
+ it('extracts only fields present in the pinned template, including mixed answers',()=>{
+  const template={...DEFAULT_TEMPLATE,questions:DEFAULT_TEMPLATE.questions.filter(q=>q.field==='onset')};
+  const t=turn('I am calling about a headache that started yesterday. I took a tablet.');
+  const extracted=validateExtraction(mockExtraction(t,'onset',template),[t],template);
+  expect(extracted.facts.map(fact=>fact.field)).toEqual(['onset']);
+ });
+ it('does not relabel an answer about a removed field as the current question',()=>{
+  const template={...DEFAULT_TEMPLATE,questions:DEFAULT_TEMPLATE.questions.filter(q=>q.field==='callback')};
+  const t=turn('I took a tablet.');
+  expect(mockExtraction(t,'callback',template).facts).toEqual([]);
+ });
+ it('uses the configured first field for generic fixture answers before a question is registered',()=>{
+  const template={...DEFAULT_TEMPLATE,questions:[DEFAULT_TEMPLATE.questions.find(q=>q.field==='symptoms')!,DEFAULT_TEMPLATE.questions.find(q=>q.field==='onset')!]};
+  const t=turn('No other concerns.');
+  expect(validateExtraction(mockExtraction(t,undefined,template),[t],template).facts[0]).toMatchObject({field:'symptoms',status:'denied'});
+  const next=turn('Last Friday.');
+  expect(mockExtraction(next,'onset',template).facts[0]).toMatchObject({field:'onset',value:'Last Friday.'});
+ });
  it.each([
   ['I do not take medication.','medications','denied'],
   ["I don't take any medication.",'medications','denied'],

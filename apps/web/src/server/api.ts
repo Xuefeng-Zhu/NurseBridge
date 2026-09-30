@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { workspacePreferences, WorkspacePreferencesSchema, automatedIntakeAllowed, type DemoSettings } from '@nursebridge/contracts';
 import { CommandBodySchema, FieldSchema, DISCLOSURE, RECORDING_DISCLOSURE_VERSION, type Session, type IntakeTemplate } from '@nursebridge/contracts';
 import { DEFAULT_TEMPLATE } from '@nursebridge/intake-policy';
 import { RETENTION_MS, SESSION_MS, CALL_DURATION_MS } from '@nursebridge/database';
@@ -102,7 +103,8 @@ export async function command(request: Request, id: string, type: string) { cons
     throw new HttpError(403, 'Workspace administrator required'); if (['consent', 'mock-turn'].includes(type) && call.callerParticipantId !== user.participantId)
     throw new HttpError(403, 'Caller membership required'); if (type === 'consent') {
     z.boolean().parse(data.accepted);
-    if (data.accepted && bindings.PROVIDER_MODE === 'live') {
+    if (data.accepted && call.workspacePreferences && !automatedIntakeAllowed(call.workspacePreferences, call.mode)) throw new HttpError(409, 'Automated intake is disabled for this call. Request a nurse.');
+    if (data.accepted && call.mode === 'live') {
         if (data.recordingAccepted !== true || data.recordingDisclosureVersion !== RECORDING_DISCLOSURE_VERSION) throw new HttpError(400, 'Current recording disclosure consent is required');
         const healthResponse = await bindings.REALTIME.fetch('https://internal/health');
         const health = await healthResponse.json() as {liveActivation?: {ready: boolean}};
@@ -111,29 +113,58 @@ export async function command(request: Request, id: string, type: string) { cons
     }
 } if (type === 'mock-turn' && bindings.PROVIDER_MODE !== 'mock')
     throw new HttpError(403, 'Replay is unavailable in live mode'); const { commandId, expectedRevision, ...payload } = parsed; return json(unwrap(await callObject(bindings, id).command({ workspaceId: user.workspaceId, participantId: user.participantId, role: user.role, commandId, expectedRevision, type, payload }))); }
-export async function settings(request: Request) { const bindings = env(), user = await session(request, bindings, ['admin', 'nurse']); const row = await bindings.DB.prepare('SELECT settings_json FROM workspaces WHERE id=?').bind(user.workspaceId).first<{
-    settings_json: string;
-}>(); let phoneInbound = { provider: 'twilio' as const, enabled: false, configured: false }; let providers = { voiceAgent: { configured: false, verified: false }, extraction: { configured: false, verified: false } }; const recording = {provider: 'assemblyai', enabled: bindings.PROVIDER_MODE === 'live', disclosureVersion: RECORDING_DISCLOSURE_VERSION, retentionVerified: false, deletionVerified: false}; try {
-    const health = await bindings.REALTIME.fetch('https://internal/health');
-    const value = await health.json() as {
-        providers?: typeof providers;
-        phoneInbound?: typeof phoneInbound;
+async function settingsValue(bindings: AppEnv, workspaceId: string): Promise<DemoSettings> {
+    const row = await bindings.DB.prepare('SELECT settings_json,expires_at FROM workspaces WHERE id=?').bind(workspaceId).first<{settings_json: string; expires_at: number}>();
+    if (!row) throw new HttpError(404, 'Workspace not found');
+    const stored = JSON.parse(row.settings_json);
+    const preferences = workspacePreferences(stored);
+    const providers = { voiceAgent: { configured: false, verified: false }, extraction: { configured: false, verified: false } };
+    let value = { providers, liveActivation: { ready: false, issues: ['service_status_unavailable'] }, phoneInbound: { enabled: false, configured: false }, phoneNumbers: [] as string[] };
+    try {
+        const response = await bindings.REALTIME.fetch('https://internal/health?workspaceId=' + encodeURIComponent(workspaceId));
+        if (!response.ok) throw new Error('Health unavailable');
+        value = { ...value, ...await response.json() as Partial<typeof value> };
+    } catch { /* Keep unavailable status visible. */ }
+    const blockers = bindings.PROVIDER_MODE === 'mock' ? [] : [...value.liveActivation.issues];
+    if (!preferences.automatedIntake) blockers.push('workspace_automated_intake_disabled');
+    if (bindings.PROVIDER_MODE === 'live' && !preferences.recordingAllowed) blockers.push('recording_off_requires_nurse_only');
+    const phoneAvailable = value.phoneInbound.enabled && value.phoneInbound.configured && value.phoneNumbers.length > 0;
+    return { revision: stored.revision ?? 0, preferences, workspaceExpiresAt: row.expires_at,
+        escalationDestination: preferences.escalationDestination, retentionDays: preferences.retentionDays,
+        template: await template(bindings, workspaceId), mode: bindings.PROVIDER_MODE, providers: value.providers,
+        capabilities: { automatedIntake: blockers.length === 0, blockers, phoneNumbers: value.phoneNumbers, phoneAvailable, checkedAt: Date.now() },
+        phoneInbound: { provider: 'twilio', configured: phoneAvailable, enabled: phoneAvailable && preferences.phoneEnabled },
+        recording: { provider: 'assemblyai', enabled: bindings.PROVIDER_MODE === 'live' && blockers.length === 0 && preferences.recordingAllowed && preferences.automatedIntake, disclosureVersion: RECORDING_DISCLOSURE_VERSION, retentionVerified: false, deletionVerified: false },
     };
-    if (value.providers)
-        providers = value.providers;
-    if (value.phoneInbound) phoneInbound = value.phoneInbound;
 }
-catch { /* Unavailable remains explicitly unverified. */ } return json({ escalationDestination: 'Nurse queue', ...JSON.parse(row?.settings_json ?? '{}'), retentionDays: 7, recording, phoneInbound, template: await template(bindings, user.workspaceId), mode: bindings.PROVIDER_MODE, providers }); }
-const TemplateSchema = z.object({ id: z.string().min(1).max(64), name: z.string().min(1).max(120), opening: z.string().min(1).max(1000), acknowledgments: z.array(z.string().min(1).max(500)).min(1).max(8), questions: z.array(z.object({ id: FieldSchema, field: FieldSchema, text: z.string().min(1).max(500) })).min(1).max(8) });
-export async function updateSettings(request: Request) { const { bindings, user, data } = await mutation(request, ['admin']); const destination = data.escalationDestination === undefined ? undefined : z.string().min(1).max(120).parse(data.escalationDestination); if (data.recording !== undefined || data.retentionDays !== undefined && data.retentionDays !== 7)
-    throw new HttpError(400, 'Provider recording is controlled by deployment configuration; application retention stays at seven days'); const statements = destination === undefined ? [] : [bindings.DB.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').bind(JSON.stringify({ escalationDestination: destination }), user.workspaceId)]; if (data.template) {
-    const input = TemplateSchema.parse(data.template);
-    if (new Set(input.questions.map(q => q.id)).size !== input.questions.length || input.questions.some(q => q.id !== q.field))
-        throw new HttpError(400, 'Template question IDs must be unique and match their fields');
-    const current = await template(bindings, user.workspaceId);
-    const next = { ...input, version: current.version + 1, createdAt: Date.now() };
-    statements.push(bindings.DB.prepare('INSERT INTO template_versions(id,workspace_id,version,body_json,created_at) VALUES(?,?,?,?,?)').bind(input.id, user.workspaceId, next.version, JSON.stringify(next), Date.now()));
-} if (statements.length > 0) await bindings.DB.batch(statements); return settings(request); }
+export async function settings(request: Request) {
+    const bindings = env(), user = await session(request, bindings, ['admin', 'nurse']);
+    return json(await settingsValue(bindings, user.workspaceId));
+}
+const TemplateSchema = z.object({ id: z.string().min(1).max(64), name: z.string().trim().min(1).max(100), opening: z.string().trim().min(1).max(500), acknowledgments: z.array(z.string().trim().min(1).max(500)).min(1).max(8), questions: z.array(z.object({ id: FieldSchema, field: FieldSchema, text: z.string().trim().min(1).max(500) })).min(1).max(8) });
+const SettingsPatchSchema = WorkspacePreferencesSchema.partial().extend({ commandId: z.string().uuid().optional(), expectedRevision: z.number().int().nonnegative().optional(), template: TemplateSchema.optional() }).strict();
+export async function updateSettings(request: Request) {
+    const { bindings, user, data } = await mutation(request, ['admin']);
+    const parsed = SettingsPatchSchema.parse(data);
+    const { expectedRevision, template: input } = parsed;
+    const patch = WorkspacePreferencesSchema.partial().parse(parsed);
+    const row = await bindings.DB.prepare('SELECT settings_json FROM workspaces WHERE id=?').bind(user.workspaceId).first<{settings_json: string}>();
+    if (!row) throw new HttpError(404, 'Workspace not found');
+    const stored = JSON.parse(row.settings_json), revision = stored.revision ?? 0;
+    if (expectedRevision !== undefined && expectedRevision !== revision) throw new HttpError(409, 'Settings changed in another session. Refresh settings before saving again. Your drafts are preserved.');
+    const preferences = workspacePreferences({ ...stored, ...patch });
+    const statements = [];
+    if (input) {
+        if (new Set(input.questions.map(q => q.id)).size !== input.questions.length || input.questions.some(q => q.id !== q.field)) throw new HttpError(400, 'Template question IDs must be unique and match their fields');
+        const current = await template(bindings, user.workspaceId);
+        const next = { ...input, version: current.version + 1, createdAt: Date.now() };
+        statements.push(bindings.DB.prepare('INSERT INTO template_versions(id,workspace_id,version,body_json,created_at) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM workspaces WHERE id=? AND settings_json=?)').bind(input.id, user.workspaceId, next.version, JSON.stringify(next), next.createdAt, user.workspaceId, row.settings_json));
+    }
+    statements.push(bindings.DB.prepare('UPDATE workspaces SET settings_json=?,expires_at=MAX(expires_at,?) WHERE id=? AND settings_json=?').bind(JSON.stringify({ ...stored, ...preferences, revision: revision + 1 }), Date.now() + preferences.retentionDays * 86400000, user.workspaceId, row.settings_json));
+    const results = await bindings.DB.batch(statements);
+    if (!results.at(-1)?.meta.changes) throw new HttpError(409, 'Settings changed in another session. Refresh settings before saving again. Your drafts are preserved.');
+    return json(await settingsValue(bindings, user.workspaceId));
+}
 export async function exportCase(request: Request, id: string) {
     const { bindings, user, data } = await mutation(request, ['admin', 'nurse']);
     const call = await authoritative(bindings, user, id);

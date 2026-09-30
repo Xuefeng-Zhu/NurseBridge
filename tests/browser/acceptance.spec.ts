@@ -1,7 +1,10 @@
-import { chromium, expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { chromium, expect, test, type Browser, type BrowserContext, type ConsoleMessage, type Page } from './helpers/fixtures';
 import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import type { CallSnapshot } from '../../packages/contracts/src/index';
+import { attachAudioDiagnostics } from './helpers/audio-diagnostics';
+import { attachControlDiagnostics } from './helpers/control-diagnostics';
+import { watchTakeoverOutcomes } from './helpers/takeover-diagnostics';
 
 const baseURL = process.env.NURSEBRIDGE_BASE_URL ?? 'http://localhost:8787';
 const origin = new URL(baseURL).origin;
@@ -22,7 +25,7 @@ async function snapshot(page: Page, callId: string): Promise<CallSnapshot> {
   throw new Error('Authoritative call fetch exhausted transient retries');
 }
 
-async function audioBrowser(frequency: 440 | 660): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
+async function audioBrowser(frequency: 440 | 660, extraHTTPHeaders?: Record<string, string>): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
   const browser = await chromium.launch({
     headless: true,
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
@@ -33,7 +36,7 @@ async function audioBrowser(frequency: 440 | 660): Promise<{ browser: Browser; c
       '--autoplay-policy=no-user-gesture-required',
     ],
   });
-  const context = await browser.newContext({ baseURL, permissions: ['microphone'], viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce' });
+  const context = await browser.newContext({ baseURL, extraHTTPHeaders, permissions: ['microphone'], viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce' });
   const page = await context.newPage();
   return { browser, context, page };
 }
@@ -43,13 +46,12 @@ async function workspace(page: Page): Promise<void> {
   const created = page.waitForResponse(response => response.url().endsWith('/api/demo/session') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Create local workspace' }).click();
   expect((await created).status()).toBe(201);
-  await expect(page.getByText('Your isolated workspace is ready')).toBeVisible();
-  await page.goto(`${baseURL}/nurse`);
-  await expect(page.getByRole('heading', { name: 'Context before conversation.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Call queue', exact: true })).toBeVisible();
 }
 
 async function invite(admin: Page, caller: Page): Promise<string> {
-  await admin.goto(`${baseURL}/demo`);
+  await admin.goto(`${baseURL}/nurse`);
+  await admin.getByRole('button', { name: 'Invite a caller', exact: true }).click();
   await admin.getByRole('button', { name: 'Create caller invitation' }).click();
   const link = admin.locator('.invitation-result a');
   await expect(link).toBeVisible();
@@ -78,17 +80,20 @@ function frequency(value: Record<string, unknown>): number {
   return Number(audio.dominantFrequency ?? 0);
 }
 
-test('visible intake preserves evidence and corrections, then relays both distinct human microphones', async ({}, testInfo) => {
-  const caller = await audioBrowser(440);
-  const nurse = await audioBrowser(660);
+test('visible intake preserves evidence and corrections, then relays both distinct human microphones', async ({ extraHTTPHeaders }, testInfo) => {
+  const caller = await audioBrowser(440, extraHTTPHeaders);
+  const nurse = await audioBrowser(660, extraHTTPHeaders);
   const errors: string[] = [];
+  const nurseConsoleErrors: ConsoleMessage[] = [];
+  const takeoverTraffic = watchTakeoverOutcomes(nurse.page);
+  let activeCallId: string | undefined;
   let nurseWorkspaceReady = false;
   caller.page.on('pageerror', error => errors.push(`caller:${error.message}`));
   nurse.page.on('pageerror', error => errors.push(`nurse:${error.message}`));
   caller.page.on('console', message => { if (message.type() === 'error') errors.push(`caller:${message.text()}`); });
   nurse.page.on('console', message => {
     if (!nurseWorkspaceReady && message.location().url === `${origin}/api/demo/session` && message.text().includes('401')) return;
-    if (message.type() === 'error') errors.push(`nurse:${message.text()}`);
+    if (message.type() === 'error') nurseConsoleErrors.push(message);
   });
   try {
     await workspace(nurse.page);
@@ -98,6 +103,7 @@ test('visible intake preserves evidence and corrections, then relays both distin
     expect(configuredSession.diagnostics, 'Enable test diagnostics only in the isolated local test environment').toBe(true);
     await invite(nurse.page, caller.page);
     const call = await join(caller.page);
+    activeCallId = call.id;
     expect(call.intakeState).toBe('NOT_STARTED');
     expect(call.queueState).toBe('WAITING');
     await expect(caller.page.getByText('Clinical use requires completed release approval. Do not enter patient information.')).toBeVisible();
@@ -107,6 +113,7 @@ test('visible intake preserves evidence and corrections, then relays both distin
     await caller.page.getByRole('button', { name: 'Enable microphone & start intake' }).click();
     await expect.poll(async () => (await snapshot(caller.page, call.id)).mediaReady.caller).toBe(true);
 
+    await caller.page.locator('summary').filter({ hasText: 'Transcript test tools' }).click();
     const lines = [
       'I am calling about a headache that started yesterday afternoon. It is mostly behind my eyes. I would describe it as a six out of ten.',
       'No other symptoms. I have not checked my temperature.',
@@ -134,12 +141,15 @@ test('visible intake preserves evidence and corrections, then relays both distin
     // Trigger an approved question with an audible220Hz mock cue, then interrupt it.
     await caller.page.getByLabel('Caller transcript').fill('I do not take medication.');
     await caller.page.getByRole('button', { name: 'Replay transcript' }).click();
-    await expect.poll(async () => Math.abs(frequency(await diagnostics(caller.page)) - 220)).toBeLessThan(12);
-    expect(Number((await diagnostics(caller.page)).queuedSamples)).toBeGreaterThan(0);
+    await expect.poll(async () => {
+      // Both observations must come from the same render diagnostics window.
+      const current = await diagnostics(caller.page);
+      return Math.abs(frequency(current) - 220) < 12 && Number(current.queuedSamples) > 0;
+    }, { intervals: [50, 100, 100, 100] }).toBe(true);
     await expect(nurse.page.getByRole('button', { name: 'Take over call' })).toBeEnabled();
     await nurse.page.getByRole('button', { name: 'Take over call' }).click();
     await expect.poll(async () => (await snapshot(nurse.page, call.id)).queueState, { timeout: 20_000 }).toBe('CONNECTED');
-    await expect(caller.page.getByText('Two-way browser audio is active. Automated providers are stopped.')).toBeVisible();
+    await expect(caller.page.getByRole('region', { name: 'Browser call' }).getByText('Speak with your nurse. Automated intake is off.', { exact: true })).toBeVisible();
     await expect(nurse.page.getByText('Human audio connected', { exact: true })).toBeVisible();
     const connected = await snapshot(nurse.page, call.id);
     expect(connected.conversationOwner).toBe('NURSE');
@@ -171,8 +181,13 @@ test('visible intake preserves evidence and corrections, then relays both distin
     for (const page of [caller.page, nurse.page]) expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
     await caller.page.screenshot({ path: testInfo.outputPath('caller-mobile.png'), fullPage: true });
     await nurse.page.screenshot({ path: testInfo.outputPath('nurse-mobile.png'), fullPage: true });
+    errors.push(...(await takeoverTraffic.unexpectedConsoleErrors(nurseConsoleErrors)).map(message => `nurse:${message}`));
     expect(errors).toEqual([]);
   } finally {
+    await attachControlDiagnostics(nurse.page, testInfo, baseURL, activeCallId);
+    await takeoverTraffic.attach(testInfo);
+    await attachAudioDiagnostics(caller.page, testInfo, 'caller');
+    await attachAudioDiagnostics(nurse.page, testInfo, 'nurse');
     // Shut down active fake capture/worklet graphs before Chromium's process cleanup.
     for (const participant of [caller, nurse]) {
       await participant.page.evaluate(() => (window as unknown as { __nursebridge?: { close(): void } }).__nursebridge?.close()).catch(() => undefined);
@@ -232,7 +247,7 @@ test('completed collection ends automation and keeps the caller waiting within t
   expect(Object.values(waiting.collection).every(field => field.status === 'answered')).toBe(true);
   expect(['idle', 'ended']).toContain(waiting.providerSession.status);
   await expect(page.getByRole('status').filter({ hasText: /^WAITING FOR A NURSE$/ })).toBeVisible();
-  await expect(page.getByText(/automated intake is complete/i)).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Browser call' }).getByText(`${call.template.acknowledgments.at(-1)} Intake complete — waiting for a nurse.`, { exact: true })).toBeVisible();
   await expect(page.getByText(/Call time remaining/)).toBeVisible();
 
   let sessionReadInterrupted = false;
@@ -250,10 +265,10 @@ test('completed collection ends automation and keeps the caller waiting within t
   expect(sessionReadInterrupted).toBe(true);
 });
 
-test('declining automated intake preserves queue arrival and isolates another workspace', async ({ browser }) => {
-  const adminContext = await browser.newContext();
-  const callerContext = await browser.newContext();
-  const outsiderContext = await browser.newContext();
+test('declining automated intake preserves queue arrival and isolates another workspace', async ({ browser, extraHTTPHeaders }) => {
+  const adminContext = await browser.newContext({ extraHTTPHeaders });
+  const callerContext = await browser.newContext({ extraHTTPHeaders });
+  const outsiderContext = await browser.newContext({ extraHTTPHeaders });
   const admin = await adminContext.newPage();
   const caller = await callerContext.newPage();
   const outsider = await outsiderContext.newPage();

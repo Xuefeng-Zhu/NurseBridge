@@ -171,3 +171,29 @@ describe('real Durable Object authority',()=>{
   expect(await bindings.DB.prepare('SELECT id FROM calls WHERE id=?').bind(callId).first()).toBeNull();expect(await bindings.DB.prepare('SELECT call_id FROM deletion_tombstones WHERE call_id=?').bind(callId).first()).not.toBeNull();
  });
 });
+
+it('retains a 30-day case past day seven and erases its case and export at the captured expiry', async () => {
+ const now = Date.now();
+ await bindings.DB.prepare('INSERT INTO workspaces(id,created_at,expires_at,settings_json) VALUES(?,?,?,?)').bind('workspace-a', now, now + 7 * 86400000, JSON.stringify({ retentionDays: 30 })).run();
+ const { stub, callId } = await create();
+ const result = await stub.snapshot('workspace-a');
+ if (!result.ok || !result.snapshot) throw new Error('Missing call');
+ const expiry = result.snapshot.expiresAt;
+ expect(expiry - result.snapshot.createdAt).toBe(30 * 86400000);
+ await stub.command(command('end'));
+ const key = `workspace-a/${callId}/retention-test.json`;
+ await bindings.EXPORTS!.put(key, '{}');
+ expect((await stub.reserveExport({ workspaceId: 'workspace-a', exportId: 'retention-export', key })).ok).toBe(true);
+ await bindings.DB.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').bind(JSON.stringify({ retentionDays: 1 }), 'workspace-a').run();
+ const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 8 * 86400000);
+ try {
+  await runInDurableObject(stub, instance => instance.alarm());
+  expect(await stub.snapshot('workspace-a')).toMatchObject({ ok: true, snapshot: { expiresAt: expiry } });
+  expect(await bindings.EXPORTS!.get(key)).not.toBeNull();
+  clock.mockReturnValue(expiry + 1);
+  await runInDurableObject(stub, instance => instance.alarm());
+  expect(await stub.snapshot('workspace-a')).toMatchObject({ ok: false, status: 410 });
+  expect(await bindings.EXPORTS!.get(key)).toBeNull();
+  expect(await bindings.DB.prepare('SELECT id FROM calls WHERE id=?').bind(callId).first()).toBeNull();
+ } finally { clock.mockRestore(); }
+});

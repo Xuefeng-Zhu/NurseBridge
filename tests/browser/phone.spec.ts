@@ -1,4 +1,4 @@
-import { chromium, expect, test, type Page } from '@playwright/test';
+import { chromium, expect, test, type Page } from './helpers/fixtures';
 import { createHmac, randomBytes } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -187,7 +187,7 @@ class PhoneEmulator {
   }
 }
 
-test('signed phone-protocol emulator and a real nurse browser exchange distinct audio after playback barriers', async ({}, testInfo) => {
+test('signed phone-protocol emulator and a real nurse browser exchange distinct audio after playback barriers', async ({ extraHTTPHeaders }, testInfo) => {
   test.setTimeout(90_000);
   loopback(baseURL); loopback(phoneOrigin);
   expect(new URL(phoneOrigin).origin).toBe(phoneOrigin);
@@ -200,7 +200,7 @@ test('signed phone-protocol emulator and a real nurse browser exchange distinct 
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}),
     args: ['--disable-crashpad-for-testing', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve('tests/fixtures/microphone-660hz.wav')}`, '--autoplay-policy=no-user-gesture-required'],
   });
-  const context = await browser.newContext({ baseURL, storageState: storageState!, permissions: ['microphone'], viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce' });
+  const context = await browser.newContext({ baseURL, extraHTTPHeaders, storageState: storageState!, permissions: ['microphone'], viewport: { width: 1440, height: 1050 }, reducedMotion: 'reduce' });
   const page = await context.newPage();
   const errors: string[] = [];
   const nonLocalRequests: string[] = [];

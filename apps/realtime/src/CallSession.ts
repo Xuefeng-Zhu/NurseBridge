@@ -1,3 +1,4 @@
+import { workspacePreferences, automatedIntakeAllowed, type WorkspacePreferences } from '@nursebridge/contracts';
 import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
 import { EMERGENCY_COPY, FieldSchema, ProposedFactSchema, type IntakeTemplate, type TranscriptTurn, type RpcResult } from '@nursebridge/contracts';
@@ -7,14 +8,14 @@ import { SessionStore } from './persistence/store';
 import { projectSnapshot } from './persistence/project';
 import { connectVoiceAgent, deleteVoiceAgentSession, type VoiceAgent, type VoiceToolCall } from './providers/voice-agent';
 import { liveActivationIssues } from './providers/readiness';
-import { intakePrompt, INTAKE_TOOLS, explicitRequest } from './intake-agent';
+import { intakePrompt, intakeOpening, intakeAcknowledgment, INTAKE_TOOLS, explicitRequest } from './intake-agent';
 import { extract } from './providers/nebius';
 import { newState, transition, requestHandoff, applyFacts, CommandError, fail, type CallState, type Command, type Role } from './state';
 import type { Env } from './env';
 import { PhoneTransport } from './telephony/transport';
 import { terminatePhoneCall, releasePhoneReservation } from './telephony/twilio';
 
-type Attachment={authenticated:boolean;role?:Role;participantId?:string;expiresAt:number;lastHeartbeat:number;mediaReady:boolean;lastSequence:number;audioWindowStart?:number;audioFrames?:number;pending:{sequence:number;streamKind:number;responseId?:number}[];transport?:'phone';phone?:{streamSid:string;lastEventSequence:number;nextAudioSequence:number;lastTimestamp:number;captureReady:boolean;playbackReady:boolean}};
+type Attachment={authenticated:boolean;role?:Role;participantId?:string;expiresAt:number;lastHeartbeat:number;mediaReady:boolean;lastSequence:number;audioBudgetMs?:number;audioBudgetUpdatedAt?:number;pending:{sequence:number;streamKind:number;responseId?:number}[];transport?:'phone';phone?:{streamSid:string;lastEventSequence:number;nextAudioSequence:number;lastTimestamp:number;captureReady:boolean;playbackReady:boolean}};
 type PhoneBinding={provider:'twilio';workspaceId:string;accountSid:string;providerCallSid:string;streamTokenHash:string;streamTokenExpiresAt:number;consumed:boolean;streamSid?:string;terminated:boolean;terminationPending:boolean;terminationAttempts:number;terminationRetryAt?:number;reservationReleasePending?:boolean;consentDecision?:'accepted'|'declined'|'unavailable';consentCommandId?:string};
 type Ticket={workspaceId:string;participantId:string;role:Role;expiresAt:number;audience:'nursebridge-realtime';callId:string};
 const errorResult=(error:unknown):RpcResult=>error instanceof CommandError?{ok:false,status:error.status,error:error.message,code:error.code}:{ok:false,status:503,error:'The session is temporarily unavailable.',code:'session_unavailable'};
@@ -53,8 +54,13 @@ export class CallSession extends DurableObject<Env>{
   const phoneRow=this.store.storage.sql.exec<{body:string}>('SELECT body FROM phone_binding WHERE id=1').toArray()[0];if(phoneRow)this.phone=JSON.parse(phoneRow.body) as PhoneBinding;
   this.store.storage.sql.exec("UPDATE provider_connections SET status='manual_reconciliation_required' WHERE status='connecting'");
   if(this.state&&!this.state.deleted&&(this.state.provider.connected||this.state.participants.caller||this.state.participants.nurse)){
-   this.mutate(s=>{s.provider.connected=false;s.provider.warning='Session restarted; a transcription gap may be present.';s.providerSession.status='interrupted';s.aiStatus='stopped';s.conversationOwner='NONE';s.waitingReason='technical_failure';s.humanRequested=true;s.controlEpoch++;s.responseGeneration++;s.participants={caller:false,nurse:false};s.mediaReady={caller:false,nurse:false};s.queueState=s.claim?'CLAIMED':'WAITING';delete s.handoff;s.warnings.push('Session restarted. Automated intake will not restart; reconnect for nurse help.');s.escalations.push({id:crypto.randomUUID(),reason:'technical_failure',message:'Call interrupted by restart; nurse help requested.',at:Date.now()});},'recovery','Session recovered from durable storage.');
+   if(this.state.queueState==='CLOSED'){
+    // Closure is durable before socket close callbacks run. A restart in that
+    // interval must clear transport presence without reopening the call.
+    this.mutate(s=>{s.provider.connected=false;if(['active','connecting','ending'].includes(s.providerSession.status)){s.providerSession.status='ended';s.providerSession.endedAt??=Date.now();}s.aiStatus='stopped';s.conversationOwner='NONE';s.participants={caller:false,nurse:false};s.mediaReady={caller:false,nurse:false};delete s.handoff;delete s.flushIssuedFor;},'terminal-recovery','Cleared stale connections for an ended call.');
+   }else this.mutate(s=>{s.provider.connected=false;s.provider.warning='Session restarted; a transcription gap may be present.';s.providerSession.status='interrupted';s.aiStatus='stopped';s.conversationOwner='NONE';s.waitingReason='technical_failure';s.humanRequested=true;s.controlEpoch++;s.responseGeneration++;s.participants={caller:false,nurse:false};s.mediaReady={caller:false,nurse:false};s.queueState=s.claim?'CLAIMED':'WAITING';delete s.handoff;s.warnings.push('Session restarted. Automated intake will not restart; reconnect for nurse help.');s.escalations.push({id:crypto.randomUUID(),reason:'technical_failure',message:'Call interrupted by restart; nurse help requested.',at:Date.now()});},'recovery','Session recovered from durable storage.');
    for(const socket of ctx.getWebSockets())socket.close(1012,'Reconnect with a new connection ticket');
+   this.ctx.waitUntil(this.flushProjection());
   }
   // A phone cannot obtain a fresh browser ticket after object recovery. End its
   // carrier leg durably instead of keeping an inaudible, billable call alive.
@@ -98,20 +104,28 @@ export class CallSession extends DurableObject<Env>{
  }
 
 
- async initialize(input:{callId:string;workspaceId:string;callerParticipantId:string;template?:IntakeTemplate;mode:'mock'|'live';channel?:'browser'|'phone';createdAt?:number;expiresAt?:number}):Promise<RpcResult>{
+ async initialize(input:{callId:string;workspaceId:string;callerParticipantId:string;template?:IntakeTemplate;mode:'mock'|'live';channel?:'browser'|'phone';createdAt?:number;expiresAt?:number;workspacePreferences?:WorkspacePreferences}):Promise<RpcResult>{
   try{
    if(!/^[a-zA-Z0-9_-]{8,100}$/.test(input.callId)||!input.workspaceId||!input.callerParticipantId)fail(400,'invalid_call','Invalid call initialization.');
    if(this.state){this.scoped(input.workspaceId);if(this.state.callerParticipantId!==input.callerParticipantId)fail(403,'forbidden','Call owner mismatch.');}
-   else{
+   else await this.ctx.blockConcurrencyWhile(async()=>{
+    if(this.state){this.scoped(input.workspaceId);if(this.state.callerParticipantId!==input.callerParticipantId)fail(403,'forbidden','Call owner mismatch.');return;}
     if(input.mode!==this.env.PROVIDER_MODE)fail(400,'mode_mismatch','Requested provider mode does not match the configured worker.');
-    const createdAt=input.createdAt??Date.now();this.state=newState({...input,createdAt,callDeadlineAt:createdAt+Number(this.env.MAX_CALL_SECONDS??600)*1000});this.ctx.storage.transactionSync(()=>this.store.commit(this.state!,'arrived','Caller joined the queue before intake.'));
-   }
+    const createdAt=input.createdAt??Date.now();
+    const workspace=await this.env.DB.prepare('SELECT settings_json FROM workspaces WHERE id=?').bind(input.workspaceId).first<{settings_json:string}>();
+    const preferences=input.channel==='phone'&&input.workspacePreferences?input.workspacePreferences:workspacePreferences(workspace?.settings_json??'{}');
+    const expiresAt=input.expiresAt??createdAt+preferences.retentionDays*86400000;
+    await this.env.DB.prepare('UPDATE workspaces SET expires_at=MAX(expires_at,?) WHERE id=?').bind(expiresAt,input.workspaceId).run();
+    this.state=newState({...input,createdAt,expiresAt,workspacePreferences:preferences,callDeadlineAt:createdAt+Number(this.env.MAX_CALL_SECONDS??600)*1000});
+    if(!automatedIntakeAllowed(preferences,input.mode))requestHandoff(this.state,'human_request','Automated intake is disabled. Waiting for '+preferences.escalationDestination+'.',createdAt);
+    this.ctx.storage.transactionSync(()=>this.store.commit(this.state!,'arrived','Caller joined the queue before intake.'));
+   });
    await this.flushProjection();
    if(!this.state||this.state.projection.revision<1)fail(503,'queue_initializing','Queue entry is still initializing. Retry with the same command ID.');
    await this.scheduleAlarm();return{ok:true,snapshot:this.visibleSnapshot()};
   }catch(error){return errorResult(error);}
  }
- async initializePhone(input:{callId:string;workspaceId:string;callerParticipantId:string;mode:'mock'|'live';template?:IntakeTemplate;provider:'twilio';accountSid:string;providerCallSid:string;streamTokenHash:string;streamTokenExpiresAt:number;createdAt?:number;expiresAt?:number}):Promise<RpcResult>{
+ async initializePhone(input:{callId:string;workspaceId:string;callerParticipantId:string;mode:'mock'|'live';template?:IntakeTemplate;provider:'twilio';accountSid:string;providerCallSid:string;streamTokenHash:string;streamTokenExpiresAt:number;createdAt?:number;expiresAt?:number;workspacePreferences?:WorkspacePreferences}):Promise<RpcResult>{
   try{
    if(input.provider!=='twilio'||!/^AC[0-9a-f]{32}$/i.test(input.accountSid)||!/^CA[0-9a-f]{32}$/i.test(input.providerCallSid)||!/^[0-9a-f]{64}$/.test(input.streamTokenHash)||!Number.isFinite(input.streamTokenExpiresAt))fail(400,'invalid_phone','Invalid phone initialization.');
    const receipt=await this.env.DB.prepare('SELECT terminal_at FROM inbound_calls WHERE provider=? AND account_sid=? AND provider_call_sid=?').bind(input.provider,input.accountSid,input.providerCallSid).first<{terminal_at:number|null}>();
@@ -382,8 +396,12 @@ export class CallSession extends DurableObject<Env>{
    if(input.type==='heartbeat'){if(this.state?.claim&&this.state.claim.participantId===a.participantId&&a.role!=='caller'){this.state.claim.expiresAt=Date.now()+30000;this.checkpoint();}this.send(socket,{type:'heartbeat',now:Date.now()});return;}
    if(input.type==='media-ready'){
     a.mediaReady=input.microphone===true&&input.playback===true;socket.serializeAttachment(a);
-    if(a.role==='caller')this.mutate(s=>{s.mediaReady.caller=a!.mediaReady;},'media-ready','Caller microphone and playback readiness updated.');
-    else if((a.role==='nurse'||a.role==='admin')&&this.state?.claim?.participantId===a.participantId)this.mutate(s=>{s.mediaReady.nurse=a!.mediaReady;s.participants.nurse=true;},'media-ready','Nurse microphone and playback readiness updated.');
+    const role=a.role==='caller'?'caller':(a.role==='nurse'||a.role==='admin')&&this.state?.claim?.participantId===a.participantId?'nurse':undefined;
+    if(role&&this.state&&!this.state.deleted&&this.state.queueState!=='CLOSED'){
+     const wasReady=this.state.mediaReady[role];const presence=this.participantMedia(role);
+     this.mutate(s=>{s.mediaReady[role]=presence.mediaReady;s.participants[role]=presence.connected;},'media-ready',`${role==='caller'?'Caller':'Nurse'} microphone and playback readiness updated.`);
+     if(wasReady&&!presence.mediaReady)this.interruptHumanMedia(`${role==='caller'?'Caller':'Nurse'} audio became unavailable. Restore audio and retry human access.`);
+    }
     await this.beginHandoff();if(a.role==='caller')this.ctx.waitUntil(this.startIntake());this.publish();return;
    }
    if(input.type==='playback-flushed'){this.playbackFlushed(a,input);return;}
@@ -423,8 +441,14 @@ export class CallSession extends DurableObject<Env>{
   if(frame.payload.length!==2400||frame.sampleRate!==24000)return socket.close(1008,'Expected 50 ms mono PCM16 at 24 kHz');
   this.send(socket,{type:'audio-ack',sequence:frame.sequence,streamKind:frame.streamKind,credits:1});
   if(frame.sequence<=a.lastSequence||frame.controlEpoch!==state.controlEpoch)return;
-  const now=Date.now();if(!a.audioWindowStart||now-a.audioWindowStart>=1000){a.audioWindowStart=now;a.audioFrames=0;}a.audioFrames=(a.audioFrames??0)+1;
-  if(a.audioFrames>30){this.gap('Audio sender exceeded the realtime delivery limit.');socket.close(1008,'Audio rate exceeded');return;}
+  // Each frame carries 50ms of audio. Permit the 20-credit capture backlog plus
+  // one frame of arrival-phase slack: the next capture may arrive immediately
+  // after the delayed batch. The 21-frame budget still refills at only 20fps.
+  const now=Date.now(),updatedAt=a.audioBudgetUpdatedAt??now;
+  a.audioBudgetMs=Math.min(1050,(a.audioBudgetMs??1050)+Math.max(0,now-updatedAt));
+  a.audioBudgetUpdatedAt=Math.max(now,updatedAt);
+  if(a.audioBudgetMs<50){this.gap('Audio sender exceeded the realtime delivery limit.');socket.close(1008,'Audio rate exceeded');return;}
+  a.audioBudgetMs-=50;
   a.lastSequence=frame.sequence;socket.serializeAttachment(a);
   if(a.role==='caller'&&a.participantId===state.callerParticipantId){
    frame.streamKind=AudioStreamKind.Patient;
@@ -454,7 +478,7 @@ export class CallSession extends DurableObject<Env>{
   this.abortAi('takeover',false);this.stopProvider();this.publish();
  }
  private async finishHandoff(){
-  const s=this.state;if(!s?.handoff||!s.handoff.callerFlushed||!s.handoff.callerHeard||!s.handoff.nurseHeard)return;
+  const s=this.state;if(!s?.handoff||!s.handoff.callerFlushed||!s.handoff.callerHeard||!s.handoff.nurseHeard||!s.participants.caller||!s.participants.nurse||!s.mediaReady.caller||!s.mediaReady.nurse)return;
   this.mutate(next=>{next.queueState='CONNECTED';next.conversationOwner='NURSE';next.aiStatus='stopped';next.controlRevision++;next.claim!.expiresAt=Date.now()+600000;next.timings={...next.timings,handoffMs:Date.now()-(next.handoffStartedAt??Date.now())};delete next.handoff;},'connected','Two-way human audio playback confirmed. AI provider audio forwarding is disabled.');this.stopProvider();this.publish();
  }
  async webSocketClose(socket:WebSocket,code=1000,reason=''){
@@ -464,13 +488,33 @@ export class CallSession extends DurableObject<Env>{
   try{socket.close([1005,1006,1015].includes(code)?1000:code,reason);}catch{/* Already closed. */}
  }
  async webSocketError(socket:WebSocket){this.disconnected(socket);try{socket.close(1011,'Connection failed');}catch{}}
+ private participantMedia(role:'caller'|'nurse',excluded?:WebSocket){
+  const now=Date.now();const participantId=role==='caller'?this.state?.callerParticipantId:this.state?.claim?.participantId;
+  const peers=this.ctx.getWebSockets().flatMap(socket=>{
+   if(socket===excluded||socket.readyState!==WebSocket.OPEN)return[];
+   const a=socket.deserializeAttachment() as Attachment|null;
+   return a?.authenticated&&a.participantId===participantId&&(role==='caller'?a.role==='caller':a.role==='nurse'||a.role==='admin')&&a.expiresAt>now&&now-a.lastHeartbeat<=30000?[a]:[];
+  });
+  return{connected:peers.length>0,mediaReady:peers.some(a=>a.mediaReady)};
+ }
+ private interruptHumanMedia(message:string){
+  const state=this.state;if(!state||state.deleted||state.queueState==='CLOSED'||!['NURSE','HANDOFF_PENDING'].includes(state.conversationOwner))return false;
+  this.mutate(s=>{s.conversationOwner='NONE';s.queueState=s.claim?'CLAIMED':'WAITING';s.humanRequested=true;s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;s.controlRevision++;if(s.claim&&!s.participants.nurse)s.claim.expiresAt=Date.now()+30000;delete s.handoff;delete s.flushIssuedFor;},'human-audio-interrupted',message);
+  this.abortAi('human-audio-interrupted',false);this.stopProvider();return true;
+ }
  private disconnected(socket:WebSocket){
   const a=socket.deserializeAttachment() as Attachment|null;if(!a?.authenticated||!this.state)return;
   if(a.transport==='phone'){this.phoneTransportFailure(socket);return;}
   if(this.state.deleted)return;
-  if(this.ctx.getWebSockets().some(other=>{if(other===socket)return false;const peer=other.deserializeAttachment() as Attachment|null;return peer?.authenticated&&peer.participantId===a.participantId&&peer.role===a.role&&other.readyState===WebSocket.OPEN;}))return;
-  if(a.role==='caller'){this.mutate(s=>{s.participants.caller=false;s.mediaReady.caller=false;},'caller-disconnected','Caller disconnected; queue arrival time preserved.');if(this.state.conversationOwner==='AI')this.waitForNurse('technical_failure','Caller disconnected during intake. Reconnect for nurse help.');else{this.abortAi('caller-disconnected');this.stopProvider();}}
-  else if(a.participantId===this.state.claim?.participantId){this.mutate(s=>{s.participants.nurse=false;s.mediaReady.nurse=false;s.conversationOwner='NONE';s.queueState=s.queueState==='CLOSED'?'CLOSED':'CLAIMED';s.humanRequested=true;s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;if(s.claim)s.claim.expiresAt=Date.now()+30000;delete s.handoff;},'nurse-disconnected','Nurse disconnected. Retry human access; AI will not restart automatically.');this.abortAi('nurse-disconnected',false);this.stopProvider();}
+  const role=a.role==='caller'?'caller':(a.role==='nurse'||a.role==='admin')&&a.participantId===this.state.claim?.participantId?'nurse':undefined;if(!role)return;
+  const presence=this.participantMedia(role,socket);const wasReady=this.state.mediaReady[role];
+  if(presence.connected===this.state.participants[role]&&presence.mediaReady===wasReady)return;
+  this.mutate(s=>{s.participants[role]=presence.connected;s.mediaReady[role]=presence.mediaReady;},`${role}-disconnected`,`${role==='caller'?'Caller':'Nurse'} connection changed; queue arrival time preserved.`);
+  const interrupted=(!presence.connected||wasReady&&!presence.mediaReady)&&this.interruptHumanMedia(`${role==='caller'?'Caller':'Nurse'} audio disconnected. Restore audio and retry human access.`);
+  if(!interrupted&&!presence.connected&&this.state.queueState!=='CLOSED'){
+   if(role==='caller'){if(this.state.conversationOwner==='AI')this.waitForNurse('technical_failure','Caller disconnected during intake. Reconnect for nurse help.');else{this.abortAi('caller-disconnected');this.stopProvider();}}
+   else{this.mutate(s=>{s.conversationOwner='NONE';s.queueState='CLAIMED';s.humanRequested=true;s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;if(s.claim)s.claim.expiresAt=Date.now()+30000;delete s.handoff;},'nurse-disconnected','Nurse disconnected. Retry human access; AI will not restart automatically.');this.abortAi('nurse-disconnected',false);this.stopProvider();}
+  }
   this.publish();
  }
  private async startIntake(){
@@ -506,13 +550,13 @@ export class CallSession extends DurableObject<Env>{
   if(!state.askedQuestions.length){
    const field=state.template.questions[0]?.field;if(!field){this.finishCollection();return;}
    this.mutate(s=>{s.intakeState='IN_PROGRESS';markQuestion(s,field);s.aiStatus='listening';},'opening','Automated intake disclosure and opening question.');
-   this.ctx.waitUntil(this.say(state.template.opening));this.publish();
+   this.ctx.waitUntil(this.say(intakeOpening(state.template)));this.publish();
   }
  }
  private startVoiceOpening(){
   if(!this.voice?.ready||!this.state||this.state.conversationOwner!=='AI'||this.openingSession===this.voice.sessionId)return;
   this.openingSession=this.voice.sessionId??undefined;
-  if(!this.voice.requestReply('Introduce yourself as an automated intake assistant, then call get_intake_progress and register_question before asking the first question.'))this.providerFailure('opening_reply_failed');
+  if(!this.voice.requestReply(`Use this effective opening: ${JSON.stringify(intakeOpening(this.state.template))}. Identify yourself as an automated intake assistant, not a nurse. Call get_intake_progress and register_question before asking the included first question exactly once.`))this.providerFailure('opening_reply_failed');
  }
  private providerFailure(code:string){
   if(!this.state||this.state.deleted||this.state.conversationOwner!=='AI')return;
@@ -526,8 +570,10 @@ export class CallSession extends DurableObject<Env>{
  }
  private finishCollection(){
   if(!this.state||this.state.conversationOwner!=='AI')return;
-  this.mutate(s=>{s.waitingReason='intake_complete';s.intakeState='CAPTURED';s.conversationOwner='NONE';s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;s.controlRevision++;delete s.currentQuestion;},'intake-captured','Intake complete — waiting for a nurse.');
-  this.abortAi('intake-complete',false);this.stopProvider();this.broadcast({type:'agent-text',text:'Intake complete — waiting for a nurse.'});this.publish();
+  const acknowledgment=intakeAcknowledgment(this.state.template,this.state.turns.length,true);
+  const text=[acknowledgment,'Intake complete — waiting for a nurse.'].filter(Boolean).join(' ');
+  this.mutate(s=>{s.waitingReason='intake_complete';s.intakeState='CAPTURED';s.conversationOwner='NONE';s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;s.controlRevision++;delete s.currentQuestion;s.assistantTurns.push({id:crypto.randomUUID(),sessionId:'server',replyId:'intake-complete',text,final:true,interrupted:false,at:Date.now()});},'intake-captured','Intake complete — waiting for a nurse.');
+  this.abortAi('intake-complete',false);this.stopProvider();this.broadcast({type:'agent-text',text});this.publish();
  }
  private enqueueVoiceAudio(pcm:Uint8Array,replyId:string){
   const reply=this.voiceReplies.get(replyId);if(!reply||!this.current(reply.epoch,reply.generation))return;
@@ -584,7 +630,7 @@ export class CallSession extends DurableObject<Env>{
   let result:unknown;
   try{
    const next=structuredClone(this.state);const action=assessCollection(next);
-   if(call.name==='get_intake_progress'){z.object({}).strict().parse(call.arguments);result={action,collection:next.collection,callerEvidence:next.turns.slice(-4).map(t=>({turnId:t.id,text:t.text.slice(0,2000)}))};}
+   if(call.name==='get_intake_progress'){z.object({}).strict().parse(call.arguments);result={action,acknowledgment:intakeAcknowledgment(next.template,next.turns.length,action.type==='complete'),collection:next.collection,callerEvidence:next.turns.slice(-4).map(t=>({turnId:t.id,text:t.text.slice(0,2000)}))};}
    else if(call.name==='register_question'){
     const args=z.object({field:FieldSchema}).strict().parse(call.arguments);
     if(action.type!=='question'||action.field!==args.field)throw new Error('Question is not currently eligible');markQuestion(next,args.field);result={ok:true,field:args.field,text:action.text};
@@ -617,7 +663,7 @@ export class CallSession extends DurableObject<Env>{
   const epoch=this.state.controlEpoch;const generation=this.state.responseGeneration;const startedAt=Date.now();
   const source=structuredClone(this.state);const extractionAbort=new AbortController();this.extractionAbort=extractionAbort;
   try{
-   const output=source.mode==='mock'?mockExtraction(source.turns.at(-1)!,source.currentQuestion):await extract({apiKey:this.env.NEBIUS_API_KEY??'',model:this.env.EXTRACTION_MODEL,signal:extractionAbort.signal,validate:candidate=>validateExtraction(candidate,source.turns,source.template)},{allowedFields:source.template.questions.map(q=>q.field),allowedQuestions:source.template.questions.map(q=>({id:q.id,field:q.field})),turns:source.turns.slice(-20),currentFacts:source.facts});
+   const output=source.mode==='mock'?mockExtraction(source.turns.at(-1)!,source.currentQuestion,source.template):await extract({apiKey:this.env.NEBIUS_API_KEY??'',model:this.env.EXTRACTION_MODEL,signal:extractionAbort.signal,validate:candidate=>validateExtraction(candidate,source.turns,source.template)},{allowedFields:source.template.questions.map(q=>q.field),allowedQuestions:source.template.questions.map(q=>({id:q.id,field:q.field})),turns:source.turns.slice(-20),currentFacts:source.facts});
    const checked=validateExtraction(output,source.turns,source.template);
    if(!this.current(epoch,generation))return;
    this.mutate(s=>{applyFacts(s,checked.facts,Date.now());s.providerSession.lastFinalizedTurnId=source.turns.at(-1)?.id;s.timings={...s.timings,extractionMs:Date.now()-startedAt};},'draft-revised','Evidence-linked intake draft updated; nurse review remains required.');
@@ -631,7 +677,7 @@ export class CallSession extends DurableObject<Env>{
   if(action.type==='handoff'){this.waitForNurse('unresolved_answer',`The ${action.field} answer remains unresolved after one clarification.`);return;}
   if(action.type==='complete'){this.finishCollection();return;}
   if(this.state!.mode==='mock'){
-   const question=action;const result=await this.handleVoiceTool({sessionId:this.state!.providerSession.id!,replyId:'fixture-tool',callId:crypto.randomUUID(),name:'register_question',arguments:{field:question.field}},true) as {ok?:boolean};if(!this.current(epoch,generation))return;if(!result?.ok){this.providerFailure('fixture_tool_failed');return;}this.ctx.waitUntil(this.say(question.text));
+   const question=action;const result=await this.handleVoiceTool({sessionId:this.state!.providerSession.id!,replyId:'fixture-tool',callId:crypto.randomUUID(),name:'register_question',arguments:{field:question.field}},true) as {ok?:boolean};if(!this.current(epoch,generation))return;if(!result?.ok){this.providerFailure('fixture_tool_failed');return;}const acknowledgment=intakeAcknowledgment(this.state!.template,this.state!.turns.length);this.ctx.waitUntil(this.say([acknowledgment,question.text].filter(Boolean).join(' ')));
   }
   this.publish();
  }
