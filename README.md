@@ -2,6 +2,10 @@
 
 Voice intake and human handoff for nursing teams.
 
+## Public source and demo
+
+The [source repository](https://github.com/Xuefeng-Zhu/NurseBridge) is **public**, verified through the GitHub API on September 30, 2026. The [hosted staging demo](https://nursebridge-web-staging.pullthread-commerce-worker.workers.dev/nurse) is reachable, but successful end-to-end intake still needs verification. Local staging and presentation changes have not all been published to `main`. For a repeatable local walkthrough with providers disabled, follow the `pnpm demo` instructions below.
+
 NurseBridge brings browser and telephone callers into one workspace. It organizes caller-reported information into a draft linked to source statements, preserves corrections and uncertainty, and lets a nurse take over the conversation with two-way audio.
 
 ## Capabilities

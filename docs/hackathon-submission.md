@@ -1,6 +1,6 @@
 # NurseBridge submission packet
 
-Updated September 29, 2026 for the **AssemblyAI - Voice Agent Hackathon on LabLab**. This is a local draft. No registration, upload, publication, or final entry was performed by this preparation task.
+Presentation packet prepared September 29, 2026 for the **AssemblyAI - Voice Agent Hackathon on LabLab**; source and submission status updated September 30. The saved LabLab draft now contains cover, video, PDF, and repository/application links. Final submission remains pending. The local assets listed below are the original preparation packet; the saved form uses the newer seven-page deck and 3:20 narrated prototype video.
 
 ## Copy for the submission form
 
@@ -70,19 +70,19 @@ The optional phone adapter accepts signed Twilio events and translates phone aud
 | --- | --- |
 | Asset bundle | [ZIP with deck, cover, form text, video, and captions](../artifacts/submission/nursebridge-submission-pack.zip) — presentation assets only, not application source |
 | Form text | [Standalone copy file](../artifacts/submission/submission-copy.txt) |
-| Source repository | [Xuefeng-Zhu/NurseBridge](https://github.com/Xuefeng-Zhu/NurseBridge) — currently **private**, checked September 29 through the GitHub API |
-| Interactive application URL | **TODO:** no verified public deployment URL |
+| Source repository | [Xuefeng-Zhu/NurseBridge](https://github.com/Xuefeng-Zhu/NurseBridge) — **public**, verified September 30 through the GitHub API |
+| Interactive application URL | [Hosted staging demo](https://nursebridge-web-staging.pullthread-commerce-worker.workers.dev/nurse) — reachable; successful end-to-end intake verification remains pending |
 | Pitch deck | [PDF](../artifacts/submission/nursebridge-pitch.pdf) and [editable PowerPoint](../artifacts/submission/nursebridge-pitch.pptx) |
 | Cover | [16:9 PNG](../artifacts/submission/nursebridge-cover.png) |
 | Video | [nursebridge-demo.mp4](../artifacts/demo/nursebridge-demo.mp4) — refreshed September 29; 80 seconds, 1920 × 1080, H.264/AAC, embedded captions |
 | Captions | [nursebridge-demo.srt](../artifacts/demo/nursebridge-demo.srt), also embedded in the MP4 |
-| Public video URL | **TODO if the form requests a URL:** local MP4 exists; upload/hosting is pending |
+| Saved LabLab video | [Uploaded 3:20 narrated prototype](https://storage.googleapis.com/lablab-video-submissions/submissions/v442vkpxphkzzfdbzwjx3155/s32sf6g6kmllg2bhee59rj1q/video/video_ox97hlbh8hs51e5bykqzd21z.mp4) — fictional transcript replay, providers off; saved September 30 |
 | Video context | [Asset provenance and disclosures](../artifacts/demo/README.md) |
 | Full demo walkthrough | [Two-browser steps](demo-script.md) |
 | Presentation script | [Three-minute recording outline](submission-recording-script.md) |
 | Engineering evidence | [Test results](test-results.md), [September 29 fictional live proof](evidence/polished-live-voice-2026-09-29.json), [local phone protocol proof](evidence/phone-protocol-proof.json) |
 
-The inbound phone implementation is merged into `main` (merge `85b1f15`). The inspected source baseline is `4ffafcb`; the September 29 polish changes are on the `codex/demo-submission-polish` review branch in [private PR #10](https://github.com/Xuefeng-Zhu/NurseBridge/pull/10). Publish the intended reviewed source revision before supplying its link to judges; a private repository URL does not grant judge access.
+Phone support, persistent settings, and editable intake templates are merged into `main` via [PR #10](https://github.com/Xuefeng-Zhu/NurseBridge/pull/10). Each call keeps its original template version when an administrator publishes changes. The [source repository](https://github.com/Xuefeng-Zhu/NurseBridge) is **public**, verified through the GitHub API on September 30, 2026. The [hosted staging demo](https://nursebridge-web-staging.pullthread-commerce-worker.workers.dev/nurse) is reachable, but successful end-to-end intake still needs verification. Local staging and presentation changes have not all been published to `main`.
 
 ## Judge testing instructions
 
@@ -120,7 +120,7 @@ For deterministic automated browser and phone checks, run `pnpm exec playwright 
 | Optional inbound phone | Local signed protocol-emulator and browser tests exercised phone-to-nurse relay. No PSTN call, owned number, or live carrier deployment was verified. |
 | Demo video | An 80-second narrated montage refreshed September 29 from the polished local application, including the current active-call controls; explicitly labeled transcript replay with providers off. It is not a recording of live speech recognition or an audible human conversation. |
 
-Public AI is blocked pending recording-control and compatibility acceptance. There is no public deployment proof, clinical validation, compliance certification, measured clinical benefit, or verified real telephone call. The submission screenshots were refreshed September 29 against the polished local app; their mode labels remain visible.
+Public AI is blocked pending recording-control and compatibility acceptance. The hosted staging URL is reachable, but its complete intake workflow remains unverified. Clinical validation, compliance certification, measured clinical benefit, and real telephone-call acceptance remain pending. The submission screenshots were refreshed September 29 against the polished local app; their mode labels remain visible.
 
 ## Screenshots and captions
 
@@ -142,14 +142,17 @@ Sources rechecked September 29, 2026 through the rendered official pages:
 - [LabLab rule book](https://lablab.ai/hackathon-rules): specifies a 16:9 cover, MP4/PDF formats, public GitHub source, and an interactive application URL.
 - [LabLab general guide](https://lablab.ai/guide): registration and team membership apply even to solo entrants.
 
-The event page in the inspected browser showed **Sign up**, so the signed-in event form was not available. Registration, team membership, upload size limits, event-specific extra fields, and any rule acceptance remain unverified. The general submission guide currently includes an IBM Bob report instruction that does not appear on the AssemblyAI event page. The rule book also names Streamlit, Replit, or Vercel while NurseBridge targets Cloudflare. Confirm applicability with the event form or organizer before treating either as an AssemblyAI-specific requirement. No IBM Bob usage or report is claimed.
+The signed-in event form was reviewed September 30. It has three steps, accepts “Other” as the demo platform, and shows all required fields filled at 100%. Cover, MP4, PDF, and repository/application links are saved. Final entry and any eligibility or rule acceptance remain separate actions. General LabLab guidance contains IBM Bob and hosting language that was not confirmed as an AssemblyAI-specific requirement; no IBM Bob usage or report is claimed.
 
 ## Remaining actions before final entry
 
-- [ ] Verify LabLab registration/team membership and inspect the signed-in event form for any additional fields or event-specific hosting rules.
-- [ ] Make the intended reviewed source revision available in a public repository. The repository remains private; phone support is merged and the latest polish is on the review branch.
-- [ ] Provide a reachable interactive demo. The currently prepared fallback is mock mode; public live AI needs the documented recording and device acceptance work first. Confirm the event accepts the intended demo scope and hosting platform.
-- [ ] Review the final deck, cover, copy and refreshed transcript-replay video. Keep any real-provider evidence separate and label the recorded mode accurately.
-- [ ] Upload the MP4, PDF and cover, supply the final repository/application links, and review the completed event form before authorizing final entry.
+- [x] Inspect the signed-in LabLab form and its required fields. The saved form was reviewed September 30.
+- [ ] Confirm any eligibility and rule agreements required by the final entry step.
+- [x] Make the source repository public. GitHub visibility was verified September 30; phone support, settings, and editable intake templates are merged into `main`.
+- [ ] Publish the intended reviewed staging and presentation changes that remain local.
+- [ ] Complete hosted demo acceptance at the linked staging URL: verify anonymous entry, intake transcript and draft, settings, export, and handoff. Reachability is confirmed; successful intake remains pending. Public live AI also needs the documented recording and device acceptance work.
+- [x] Review the saved deck, cover, copy, and 3:20 transcript-replay video. The uploaded files match the intended assets and their rendered presentation was checked September 30; actual voice-provider behavior remains separate evidence.
+- [x] Save the MP4, PDF, cover, and repository/application links in the event form.
+- [ ] Submit the final entry after resolving the hosted-demo acceptance issue, then verify the submission receipt.
 
 Local preparation is ready for review once the linked artifacts are present. Submission readiness still depends on the access, hosting, and event-form checks above.
