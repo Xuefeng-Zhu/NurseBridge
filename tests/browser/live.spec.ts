@@ -131,7 +131,7 @@ async function waitForLiveMilestone(page: Page, callId: string, name: string, pr
   throw new Error(`${name} did not arrive within ${timeoutMs} ms`);
 }
 
-test('fictional speech reaches AssemblyAI and Nebius before two-way nurse takeover', async ({ extraHTTPHeaders }, testInfo) => {
+test('fictional speech reaches live intake before two-way nurse takeover', async ({ extraHTTPHeaders }, testInfo) => {
   test.setTimeout(180_000);
   expect(new URL(baseURL).protocol, 'Live audio acceptance must remain local').toBe('http:');
   expect(['localhost', '127.0.0.1', '[::1]']).toContain(new URL(baseURL).hostname);
@@ -201,8 +201,8 @@ test('fictional speech reaches AssemblyAI and Nebius before two-way nurse takeov
     expect(captured?.nonSilentFrames).toBeGreaterThan(10);
     stage = 'final caller transcript';
     await waitForLiveMilestone(caller.page, call.id, 'Final caller transcript', state => state.turns.some(turn => turn.final && /headache/i.test(turn.text)), 55_000);
-    stage = 'Nebius evidence extraction';
-    await waitForLiveMilestone(caller.page, call.id, 'Nebius evidence extraction', state => state.facts.some(fact => fact.evidence.some(source => /headache/i.test(source.quote))), 35_000);
+    stage = 'Live evidence extraction';
+    await waitForLiveMilestone(caller.page, call.id, 'Live evidence extraction', state => state.facts.some(fact => fact.evidence.some(source => /headache/i.test(source.quote))), 35_000);
     stage = 'agent response to caller';
     await waitForLiveMilestone(caller.page, call.id, 'Agent response to caller', state => {
       const turn = state.turns.find(turn => turn.final && /headache/i.test(turn.text));

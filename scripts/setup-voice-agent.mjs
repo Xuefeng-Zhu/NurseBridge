@@ -2,7 +2,12 @@ import { pathToFileURL } from 'node:url';
 
 export const MODEL = 'nvidia/Nemotron-3_5-Lightning';
 const ENDPOINT = 'https://agents.assemblyai.com/v1/agents';
-export function agentPayload(nebiusKey) {
+function validateProvider(provider) {
+  if (provider !== 'nebius' && provider !== 'assemblyai') throw new Error('LLM_PROVIDER must be nebius or assemblyai.');
+  return provider;
+}
+export function agentPayload(nebiusKey, llmProvider = 'nebius') {
+  validateProvider(llmProvider);
   return {
     name: 'NurseBridge fictional intake',
     system_prompt: 'You are a fictional intake demonstration. Wait for the application to configure this session. Do not diagnose, recommend treatment, or provide clinical advice.',
@@ -10,23 +15,27 @@ export function agentPayload(nebiusKey) {
     input: { format: { encoding: 'audio/pcm', sample_rate: 24000 }, turn_detection: { interrupt_response: true } },
     output: { format: { encoding: 'audio/pcm', sample_rate: 24000 } },
     tools: [],
-    llm: [{ base_url: 'https://api.tokenfactory.nebius.com/v1', model: MODEL, api_key: nebiusKey }],
+    llm: llmProvider === 'assemblyai' ? [] : [{ base_url: 'https://api.tokenfactory.nebius.com/v1', model: MODEL, api_key: nebiusKey }],
   };
 }
 
 /** No env files are read, no credentials are printed, and no request is made by
- * default. --apply explicitly creates a stored agent and stores its LLM key. */
+ * default. --apply explicitly creates a stored agent; Nebius mode also stores
+ * its LLM key. AssemblyAI mode uses the managed conversational model. */
 export async function setupVoiceAgent({ args = [], env = {}, request = fetch, output = console.log } = {}) {
   if (args.some(arg => !['--apply', '--dry-run', '--help'].includes(arg)) || (args.includes('--apply') && args.includes('--dry-run'))) throw new Error('Use --dry-run (default) or --apply.');
-  if (args.includes('--help')) { output('node scripts/setup-voice-agent.mjs [--dry-run|--apply]\n--apply creates an AssemblyAI stored agent using ASSEMBLYAI_API_KEY and NEBIUS_API_KEY from the environment. It does not enable NurseBridge live mode.'); return; }
+  if (args.includes('--help')) { output('node scripts/setup-voice-agent.mjs [--dry-run|--apply]\nLLM_PROVIDER=nebius (default) or assemblyai. --apply creates an AssemblyAI stored agent using ASSEMBLYAI_API_KEY. Nebius mode also requires NEBIUS_API_KEY; assemblyai uses the managed conversational model. It does not enable NurseBridge live mode.'); return; }
+  const llmProvider = validateProvider(env.LLM_PROVIDER ?? 'nebius');
   if (!args.includes('--apply')) {
-    output(JSON.stringify({ mode: 'dry-run', method: 'POST', url: ENDPOINT, headers: { Authorization: '[ASSEMBLYAI_API_KEY]', 'Content-Type': 'application/json' }, body: agentPayload('[NEBIUS_API_KEY]'), liveActivation: 'blocked_pending_retention_and_model_verification' }, null, 2));
+    output(JSON.stringify({ mode: 'dry-run', method: 'POST', url: ENDPOINT, headers: { Authorization: '[ASSEMBLYAI_API_KEY]', 'Content-Type': 'application/json' }, body: agentPayload('[NEBIUS_API_KEY]', llmProvider), liveActivation: 'blocked_pending_retention_and_model_verification' }, null, 2));
     return;
   }
-  const key = env.ASSEMBLYAI_API_KEY; const nebius = env.NEBIUS_API_KEY;
-  if (typeof key !== 'string' || !key.trim() || typeof nebius !== 'string' || !nebius.trim()) throw new Error('Set ASSEMBLYAI_API_KEY and NEBIUS_API_KEY before --apply.');
+  const key = env.ASSEMBLYAI_API_KEY;
+  if (typeof key !== 'string' || !key.trim()) throw new Error('Set ASSEMBLYAI_API_KEY before --apply.');
+  const nebius = llmProvider === 'nebius' ? env.NEBIUS_API_KEY : undefined;
+  if (llmProvider === 'nebius' && (typeof nebius !== 'string' || !nebius.trim())) throw new Error('Set ASSEMBLYAI_API_KEY and NEBIUS_API_KEY before --apply.');
   let response;
-  try { response = await request(ENDPOINT, { method: 'POST', redirect: 'error', headers: { Authorization: key, 'Content-Type': 'application/json' }, body: JSON.stringify(agentPayload(nebius)), signal: AbortSignal.timeout(10000) }); }
+  try { response = await request(ENDPOINT, { method: 'POST', redirect: 'error', headers: { Authorization: key, 'Content-Type': 'application/json' }, body: JSON.stringify(agentPayload(nebius, llmProvider)), signal: AbortSignal.timeout(10000) }); }
   catch { throw new Error('Stored agent creation request failed. Check the provider dashboard before retrying to avoid duplicates.'); }
   if (!response.ok) {
     try { await response.body?.cancel(); } catch { /* Suppress provider error bodies. */ }
@@ -47,7 +56,7 @@ export async function setupVoiceAgent({ args = [], env = {}, request = fetch, ou
     if (!result || typeof result.id !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(result.id)) throw new Error();
   } catch { throw new Error('Stored agent creation response could not be verified. Check the provider dashboard before retrying.'); }
   // Never print the provider response, which can contain prompt/configuration.
-  output(JSON.stringify({ createdAgentId: result.id, requestedModel: MODEL, liveActivation: 'still_blocked', next: 'Record the agent id and a reviewed configuration revision. Verify the resolved model, streaming tool behavior, and provider recording/retention controls before enabling live mode.' }, null, 2));
+  output(JSON.stringify({ createdAgentId: result.id, llmProvider, requestedModel: llmProvider === 'assemblyai' ? 'assemblyai-managed' : MODEL, liveActivation: 'still_blocked', next: 'Record the agent id and a reviewed configuration revision. Verify the resolved model, streaming tool behavior, and provider recording/retention controls before enabling live mode.' }, null, 2));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -1,23 +1,82 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { connectVoiceAgent, deleteVoiceAgentSession, VoiceAgentProtocol, VOICE_AGENT_LLM_BASE, VOICE_AGENT_MODEL, type VoiceAgentCallbacks, type VoiceAgentTool } from '../src/providers/voice-agent';
+import { connectVoiceAgent, deleteVoiceAgentSession, VoiceAgentProtocol, VOICE_AGENT_LLM_BASE, VOICE_AGENT_MODEL, type VoiceAgentCallbacks, type VoiceAgentLLMProvider, type VoiceAgentTool } from '../src/providers/voice-agent';
 
 const tools: VoiceAgentTool[] = [{ type: 'function', name: 'record_fact', description: 'Store sourced facts', parameters: { type: 'object', properties: {}, additionalProperties: false } }];
 const config = { systemPrompt: 'Only approved fictional intake.', tools };
-const resolved = () => ({ system_prompt: config.systemPrompt, tools, input: { format: { encoding: 'audio/pcm', sample_rate: 24000 } }, output: { format: { encoding: 'audio/pcm', sample_rate: 24000 } }, llm: [{ base_url: VOICE_AGENT_LLM_BASE, model: VOICE_AGENT_MODEL }] });
+const resolved = (llmProvider: VoiceAgentLLMProvider = 'nebius') => ({ system_prompt: config.systemPrompt, tools, input: { format: { encoding: 'audio/pcm', sample_rate: 24000 } }, output: { format: { encoding: 'audio/pcm', sample_rate: 24000 } }, llm: llmProvider === 'assemblyai' ? [] : [{ base_url: VOICE_AGENT_LLM_BASE, model: VOICE_AGENT_MODEL }] });
 const open: VoiceAgentProtocol[] = [];
-function fixture() {
+function fixture(llmProvider?: VoiceAgentLLMProvider) {
   const sent: Record<string, any>[] = [];
   const callbacks: VoiceAgentCallbacks = { sessionCreated: vi.fn(), unidentifiedSession: vi.fn(), ready: vi.fn(), userTranscript: vi.fn(), agentTranscript: vi.fn(), replyStarted: vi.fn(), audio: vi.fn(), replyDone: vi.fn(), speechStarted: vi.fn(), toolCall: vi.fn(() => ({ ok: true })), warning: vi.fn(), closed: vi.fn() };
   const transport = { send: vi.fn((message: string) => { sent.push(JSON.parse(message)); return true; }), close: vi.fn() };
-  const agent = new VoiceAgentProtocol(transport, callbacks, config); open.push(agent);
+  const agent = new VoiceAgentProtocol(transport, callbacks, { ...config, llmProvider }); open.push(agent);
   const receive = (value: unknown) => agent.receive(JSON.stringify(value));
-  const ready = () => { agent.start('agent-fixture'); receive({ type: 'session.updated', config: resolved() }); receive({ type: 'session.ready', session_id: 'sess-fixture', config: resolved() }); receive({ type: 'session.updated', config: resolved() }); };
+  const ready = () => { agent.start('agent-fixture'); receive({ type: 'session.updated', config: resolved(llmProvider) }); receive({ type: 'session.ready', session_id: 'sess-fixture', config: resolved(llmProvider) }); receive({ type: 'session.updated', config: resolved(llmProvider) }); };
   return { agent, callbacks, transport, sent, receive, ready };
 }
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
 afterEach(() => { for (const agent of open.splice(0)) agent.close(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('Voice Agent protocol in Workers', () => {
+  it('accepts the explicitly selected managed model only after matching prompt and tools are acknowledged', () => {
+    const f = fixture('assemblyai'); f.agent.start('managed-agent');
+    expect(f.agent.send(new Uint8Array(2400))).toBe(false);
+    f.receive({ type: 'session.updated', config: resolved('assemblyai') });
+    f.receive({ type: 'session.ready', session_id: 'managed-session', config: resolved('assemblyai') });
+    expect(f.callbacks.ready).not.toHaveBeenCalled();
+    expect(f.agent.send(new Uint8Array(2400))).toBe(false);
+    expect(f.sent[1]).toEqual({ type: 'session.update', session: { system_prompt: config.systemPrompt, tools } });
+    f.receive({ type: 'session.updated', config: resolved('assemblyai') });
+    expect(f.callbacks.ready).toHaveBeenCalledExactlyOnceWith({ sessionId: 'managed-session' });
+    expect(f.agent.send(new Uint8Array([1, 2]))).toBe(true);
+    expect(f.sent.some(event => event.session?.llm !== undefined || event.session?.llmProvider !== undefined)).toBe(false);
+  });
+  it.each(['pre-identity', 'ready', 'updated'])('rejects a custom LLM in managed mode at the %s boundary', phase => {
+    const f = fixture('assemblyai'); f.agent.start('managed-agent');
+    if (phase === 'updated') f.receive({ type: 'session.ready', session_id: 'managed-session', config: resolved('assemblyai') });
+    f.receive({ type: phase === 'ready' ? 'session.ready' : 'session.updated', session_id: 'managed-session', config: resolved() });
+    expect(f.callbacks.closed).toHaveBeenCalledWith('provider_configuration_mismatch');
+    expect(f.callbacks.ready).not.toHaveBeenCalled(); expect(f.agent.send(new Uint8Array(2400))).toBe(false);
+  });
+  it.each([undefined, null, {}, 'managed'])('rejects ambiguous managed LLM configuration %j', llm => {
+    const f = fixture('assemblyai'); f.agent.start('managed-agent');
+    f.receive({ type: 'session.ready', session_id: 'managed-session', config: { ...resolved('assemblyai'), llm } });
+    expect(f.callbacks.closed).toHaveBeenCalledWith('provider_configuration_mismatch');
+    expect(f.callbacks.ready).not.toHaveBeenCalled();
+  });
+  it('does not silently switch the default Nebius configuration to the managed model', () => {
+    const f = fixture(); f.agent.start('nebius-agent');
+    f.receive({ type: 'session.ready', session_id: 'unexpected-model', config: resolved('assemblyai') });
+    expect(f.callbacks.closed).toHaveBeenCalledWith('provider_configuration_mismatch');
+  });
+  it.each(['format', 'greeting', 'prompt', 'tools'])('retains managed-model %s verification', mismatch => {
+    const f = fixture('assemblyai'); f.agent.start('managed-agent');
+    f.receive({ type: 'session.ready', session_id: 'managed-session', config: resolved('assemblyai') });
+    const applied: any = resolved('assemblyai');
+    if (mismatch === 'format') applied.output.format.sample_rate = 16000;
+    if (mismatch === 'greeting') applied.greeting = 'Unapproved opening';
+    if (mismatch === 'prompt') applied.system_prompt = 'Unapproved instructions';
+    if (mismatch === 'tools') applied.tools = [];
+    f.receive({ type: 'session.updated', config: applied });
+    expect(f.callbacks.closed).toHaveBeenCalledWith('provider_configuration_mismatch');
+    expect(f.callbacks.ready).not.toHaveBeenCalled();
+  });
+  it('preserves the selected provider across mutable updates and rejects attempts to change it', () => {
+    const f = fixture('assemblyai'); f.ready();
+    expect(f.agent.update({ ...config, llmProvider: 'nebius' })).toBe(false);
+    expect(f.agent.update({ ...config, llmProvider: 'unknown' as VoiceAgentLLMProvider })).toBe(false);
+    expect(f.agent.ready).toBe(true);
+    expect(f.agent.update({ ...config, systemPrompt: 'Updated approved intake.' })).toBe(true);
+    f.receive({ type: 'session.updated', config: { ...resolved('assemblyai'), system_prompt: 'Updated approved intake.' } });
+    expect(f.agent.ready).toBe(true);
+    expect(f.callbacks.closed).not.toHaveBeenCalled();
+  });
+  it('rejects an unknown provider before opening a provider connection', async () => {
+    const request = vi.spyOn(globalThis, 'fetch');
+    const f = fixture();
+    await expect(connectVoiceAgent({ ...config, apiKey: 'fictional-key', agentId: 'fictional-agent', llmProvider: 'unknown' as VoiceAgentLLMProvider }, f.callbacks)).rejects.toThrow('Invalid voice agent LLM provider');
+    expect(request).not.toHaveBeenCalled();
+  });
   it('uses documented reply.create only after the mutable configuration is ready', () => {
     const f = fixture(); expect(f.agent.requestReply('Begin fictional intake.')).toBe(false); f.ready();
     expect(f.agent.requestReply('Begin fictional intake.')).toBe(true); expect(f.sent.at(-1)).toEqual({ type: 'reply.create', instructions: 'Begin fictional intake.' });

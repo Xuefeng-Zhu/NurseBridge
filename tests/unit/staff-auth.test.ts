@@ -435,3 +435,114 @@ describe('explicit local staff-role recovery', () => {
         expect(count('participants')).toBe(1);
     });
 });
+
+
+describe('explicit hosted self-service workspaces', () => {
+    it.each(['mock', 'live'] as const)('opens exact HTTPS enrollment independently of provider mode: %s', mode => {
+        runtime.bindings = bindings({ PUBLIC_WORKSPACE_ACCESS: 'true', PROVIDER_MODE: mode });
+        expect(enrollmentMode(request(), runtime.bindings)).toBe('public');
+    });
+
+    it.each([
+        { PUBLIC_WORKSPACE_ACCESS: undefined },
+        { PUBLIC_WORKSPACE_ACCESS: 'false' },
+        { APP_ORIGIN: 'http://nursebridge.example' },
+        { APP_ORIGIN: hostedOrigin + '/path' },
+        { APP_ORIGIN: 'https://user:password@nursebridge.example' },
+        { ACCESS_ISSUER: issuer },
+        { ACCESS_AUDIENCE: audience },
+    ])('keeps invalid or conflicting hosted enrollment closed: %j', configuration => {
+        runtime.bindings = bindings({ PUBLIC_WORKSPACE_ACCESS: 'true', ...configuration });
+        expect(enrollmentMode(request({ origin: hostedOrigin }), runtime.bindings)).toBe('closed');
+    });
+
+    it('rejects an alias even when Origin and forwarded headers name the configured host', async () => {
+        runtime.bindings = bindings({ PUBLIC_WORKSPACE_ACCESS: 'true' });
+        const incoming = request({ origin: 'https://alias.example', data: {} });
+        incoming.headers.set('Origin', hostedOrigin);
+        incoming.headers.set('X-Forwarded-Host', 'nursebridge.example');
+        expect(enrollmentMode(incoming, runtime.bindings)).toBe('closed');
+        await expect(createSession(incoming)).rejects.toMatchObject({ status: 403 });
+        expect(count('workspaces')).toBe(0);
+    });
+
+    it('creates independent persisted admin workspaces and preserves each identity on reads', async () => {
+        runtime.bindings = bindings({ PUBLIC_WORKSPACE_ACCESS: 'true', PROVIDER_MODE: 'live' });
+        const first = await createSession(request({ data: {} }));
+        const second = await createSession(request({ data: { workspaceId, role: 'nurse', publicAccess: false } }));
+        const a = (await first.json()).session, b = (await second.json()).session;
+        expect(a.role).toBe('admin');
+        expect(b.role).toBe('admin');
+        expect(a.workspaceId).not.toBe(b.workspaceId);
+        expect(b.workspaceId).not.toBe(workspaceId);
+        expect(count('workspaces')).toBe(2);
+        expect(count('participants')).toBe(2);
+        expect(database.prepare("SELECT json_extract(settings_json,'$.publicAccess') AS enabled FROM workspaces").all()).toEqual([{ enabled: 1 }, { enabled: 1 }]);
+        await expect(session(request({ cookies: responseCookies(first), view: 'staff' }), runtime.bindings)).resolves.toMatchObject(a);
+        await expect(session(request({ cookies: responseCookies(first), view: 'caller' }), runtime.bindings)).resolves.toMatchObject(a);
+        expect(count('participants')).toBe(2);
+        for (const value of first.headers.getSetCookie()) expect(value).toContain('; Secure');
+    });
+
+    it('does not grant staff access to old workspaces, and disabling the flag restores Access enforcement', async () => {
+        runtime.bindings = bindings({ PUBLIC_WORKSPACE_ACCESS: 'true' });
+        await seedSession('admin');
+        database.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').run('{"publicDemo":true}', workspaceId);
+        await expect(session(request({ cookie: true }), runtime.bindings)).rejects.toMatchObject({ status: 401 });
+        database.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').run('{"publicAccess":"true"}', workspaceId);
+        await expect(session(request({ cookie: true }), runtime.bindings)).rejects.toMatchObject({ status: 401 });
+        database.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').run('{"publicAccess":true}', workspaceId);
+        await expect(session(request({ cookie: true }), runtime.bindings)).resolves.toMatchObject({ role: 'admin' });
+        runtime.bindings.PUBLIC_WORKSPACE_ACCESS = 'false';
+        runtime.bindings.ACCESS_ISSUER = issuer;
+        runtime.bindings.ACCESS_AUDIENCE = audience;
+        await expect(session(request({ cookie: true }), runtime.bindings)).rejects.toMatchObject({ status: 403 });
+        await expect(session(request({ cookie: true, accessToken: jwt() }), runtime.bindings)).resolves.toMatchObject({ role: 'admin' });
+    });
+
+    it('redeems nurse invitations only for marked public workspaces without weakening private invitations', async () => {
+        runtime.bindings = bindings({ PUBLIC_WORKSPACE_ACCESS: 'true' });
+        await seedInvitation('nurse');
+        await expect(createSession(request({ data: { invitation: invitationToken } }))).rejects.toMatchObject({ status: 401 });
+        expect(redeemedBy()).toBeNull();
+        database.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').run('{"publicAccess":true}', workspaceId);
+        const response = await createSession(request({ data: { invitation: invitationToken } }));
+        expect((await response.json()).session).toMatchObject({ workspaceId, role: 'nurse' });
+        await expect(session(request({ cookies: responseCookies(response), view: 'staff' }), runtime.bindings)).resolves.toMatchObject({ workspaceId, role: 'nurse' });
+    });
+
+    it('never promotes an invited caller and opens a separate workspace when they request one', async () => {
+        runtime.bindings = bindings({ PUBLIC_WORKSPACE_ACCESS: 'true' });
+        await seedInvitation('caller');
+        database.prepare('UPDATE workspaces SET settings_json=? WHERE id=?').run('{"publicAccess":true}', workspaceId);
+        const invitationResponse = await createSession(request({ data: { invitation: invitationToken, role: 'admin' } }));
+        const caller = (await invitationResponse.json()).session;
+        const callerCookies = responseCookies(invitationResponse);
+        expect(caller).toMatchObject({ workspaceId, role: 'caller' });
+        await expect(session(request({ cookies: callerCookies, view: 'staff' }), runtime.bindings, ['admin', 'nurse'])).rejects.toMatchObject({ status: 403 });
+        await expect(createSession(request({ cookies: callerCookies, data: { localStaffAccess: true } }))).rejects.toMatchObject({ status: 403 });
+        const own = await createSession(request({ cookies: callerCookies, data: { workspaceId } }));
+        const admin = (await own.json()).session;
+        expect(admin.role).toBe('admin');
+        expect(admin.workspaceId).not.toBe(workspaceId);
+        const browserCookies = responseCookies(own) + '; ' + callerCookies.split('; ').find(value => value.startsWith('nb_caller_session='));
+        await expect(session(request({ cookies: browserCookies, view: 'caller' }), runtime.bindings)).resolves.toMatchObject(caller);
+        await expect(session(request({ cookies: browserCookies, view: 'staff' }), runtime.bindings)).resolves.toMatchObject(admin);
+    });
+
+    it('keeps origin, rate limits, and Turnstile checks before workspace writes', async () => {
+        runtime.bindings = bindings({ PUBLIC_WORKSPACE_ACCESS: 'true' });
+        const wrongOrigin = request({ data: {} });
+        wrongOrigin.headers.set('Origin', 'https://other.example');
+        await expect(createSession(wrongOrigin)).rejects.toMatchObject({ status: 403 });
+        const windowStart = Math.floor(Date.now() / 3600000) * 3600000;
+        database.prepare('INSERT INTO rate_limits(key,window_start,count) VALUES(?,?,?)').run('session:' + await hash('local'), windowStart, 30);
+        await expect(createSession(request({ data: {} }))).rejects.toMatchObject({ status: 429 });
+        database.prepare('DELETE FROM rate_limits').run();
+        runtime.bindings.TURNSTILE_SECRET_KEY = 'synthetic-test-only';
+        vi.mocked(fetch).mockResolvedValueOnce(Response.json({ success: false }));
+        await expect(createSession(request({ data: { turnstileToken: 'synthetic-proof' } }))).rejects.toMatchObject({ status: 403 });
+        expect(count('workspaces')).toBe(0);
+        expect(count('participants')).toBe(0);
+    });
+});

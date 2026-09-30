@@ -6,6 +6,8 @@ export interface Env {
   EXPORTS?: R2Bucket;
   ASSEMBLYAI_API_KEY?: string;
   NEBIUS_API_KEY?: string;
+  /** Selects managed voice plus Gateway extraction, or the existing Nebius integration. */
+  LLM_PROVIDER?: 'nebius' | 'assemblyai';
   PROVIDER_MODE: 'mock' | 'live';
   ALLOWED_ORIGINS: string;
   MAX_CALL_SECONDS?: string;

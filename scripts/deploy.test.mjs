@@ -5,15 +5,14 @@ import { deploy, deploymentCommands } from './deploy.mjs';
 
 function fixture() {
   const configs = {
-    web: { name: 'nursebridge-web-local', d1_databases: [{ binding: 'DB', database_id: '00000000-0000-0000-0000-000000000001', database_name: 'local' }], r2_buckets: [{ binding: 'EXPORTS', bucket_name: 'exports-local' }], env: {} },
-    realtime: { name: 'nursebridge-realtime-local', d1_databases: [{ binding: 'DB', database_id: '00000000-0000-0000-0000-000000000001', database_name: 'local' }], r2_buckets: [{ binding: 'EXPORTS', bucket_name: 'exports-local' }], env: {} },
+    web: { name: 'nursebridge-web-local', d1_databases: [{ binding: 'DB', database_id: '00000000-0000-0000-0000-000000000001', database_name: 'local' }], env: {} },
+    realtime: { name: 'nursebridge-realtime-local', d1_databases: [{ binding: 'DB', database_id: '00000000-0000-0000-0000-000000000001', database_name: 'local' }], env: {} },
   };
   for (const [index, environment] of ['staging', 'production'].entries()) {
     const realtimeName = `nursebridge-realtime-${environment}`;
     const common = {
       vars: { PROVIDER_MODE: 'live', ALLOW_TEST_DIAGNOSTICS: 'false', FICTIONAL_LIVE_TEST: 'false', MAX_ACTIVE_CALLS_PER_WORKSPACE: '2', MAX_LIVE_CONCURRENCY: '4', DAILY_AUDIO_MINUTES: '120' },
       d1_databases: [{ binding: 'DB', database_id: `ad39d124-fc8b-4251-9b47-149caf0ccec${index}`, database_name: `nursebridge-${environment}`, migrations_dir: '../../packages/database/migrations' }],
-      r2_buckets: [{ binding: 'EXPORTS', bucket_name: `nursebridge-exports-${environment}` }],
     };
     configs.web.env[environment] = {
       ...structuredClone(common), name: `nursebridge-web-${environment}`,
@@ -88,9 +87,8 @@ test('requires exact secure origins with environment-specific CORS', () => {
   invalid((_web, realtime) => { realtime.vars.ALLOWED_ORIGINS += ',https://unrelated.example.com'; }, /ALLOWED_ORIGINS must exactly equal/);
 });
 
-test('requires matching databases, buckets, DO ownership and service destinations', () => {
+test('requires matching databases, DO ownership and service destinations', () => {
   invalid((_web, realtime) => { realtime.d1_databases[0].database_id = 'baadf00d-fc8b-4251-9b47-149caf0ccec0'; }, /same environment D1/);
-  invalid((_web, realtime) => { realtime.r2_buckets[0].bucket_name = 'unrelated-bucket'; }, /same environment R2/);
   invalid((web) => { web.durable_objects.bindings[0].script_name = 'nursebridge-realtime-production'; }, /CALL_SESSIONS/);
   invalid((_web, realtime) => { realtime.durable_objects.bindings[0].script_name = 'nursebridge-realtime-production'; }, /CALL_SESSIONS/);
   invalid((web) => { web.services[0].service = 'nursebridge-realtime-production'; }, /REALTIME service binding/);
@@ -101,9 +99,6 @@ test('rejects local and cross-environment resource sharing', () => {
   invalid((web, realtime, configs) => {
     for (const config of [web, realtime]) config.d1_databases[0].database_id = configs.web.d1_databases[0].database_id;
   }, /DB is shared with web\/local/);
-  invalid((web, realtime, configs) => {
-    for (const config of [web, realtime]) config.r2_buckets[0].bucket_name = configs.web.env.production.r2_buckets[0].bucket_name;
-  }, /EXPORTS is shared with web\/production/);
   invalid((web, _realtime, configs) => { web.name = configs.web.env.production.name; }, /Worker name overlaps/);
   invalid((web, _realtime, configs) => { web.vars.APP_ORIGIN = configs.web.env.production.vars.APP_ORIGIN; }, /APP_ORIGIN overlaps/);
 });
@@ -177,4 +172,60 @@ test('migration failure stops uploads and reports that earlier remote changes ca
     calls.push(args); return { status: args.includes('--remote') ? 1 : 0 };
   } }), /not rolled back/);
   assert.equal(calls.length, 5);
+});
+
+
+test('direct downloads need no R2; optional legacy cleanup stays isolated to realtime', () => {
+  const configs = fixture();
+  assert.equal(validateDeployment(configs, 'staging').environment, 'staging');
+  configs.realtime.env.staging.r2_buckets = [{ binding: 'EXPORTS', bucket_name: 'legacy-staging-exports' }];
+  assert.equal(validateDeployment(configs, 'staging').environment, 'staging');
+  configs.web.env.staging.r2_buckets = [{ binding: 'EXPORTS', bucket_name: 'unneeded-web-exports' }];
+  assert.throws(() => validateDeployment(configs, 'staging'), /R2 is only supported.*legacy cleanup/);
+  delete configs.web.env.staging.r2_buckets;
+  configs.realtime.env.production.r2_buckets = configs.realtime.env.staging.r2_buckets;
+  assert.throws(() => validateDeployment(configs, 'staging'), /EXPORTS is shared with realtime\/production/);
+});
+
+test('rejects malformed and duplicate legacy R2 bindings', () => {
+  for (const buckets of [
+    [{ binding: 'OTHER', bucket_name: 'legacy-staging-exports' }],
+    [{ binding: 'EXPORTS', bucket_name: 'INVALID BUCKET' }],
+    [{ binding: 'EXPORTS', bucket_name: 'legacy-staging-exports' }, { binding: 'EXPORTS', bucket_name: 'duplicate-exports' }],
+  ]) invalid((_web, realtime) => { realtime.r2_buckets = buckets; }, /R2 is only supported.*legacy cleanup/);
+});
+
+function publicWorkspaceFixture(environment = 'staging') {
+  const configs = fixture();
+  configs.web.env[environment].vars.PUBLIC_WORKSPACE_ACCESS = 'true';
+  delete configs.web.env[environment].vars.ACCESS_ISSUER;
+  delete configs.web.env[environment].vars.ACCESS_AUDIENCE;
+  return configs;
+}
+
+test('accepts explicit public workspace access only in isolated live staging', () => {
+  assert.equal(validateDeployment(publicWorkspaceFixture(), 'staging').environment, 'staging');
+  assert.throws(() => validateDeployment(publicWorkspaceFixture('production'), 'production'), /supported only in staging/);
+  const configs = fixture();
+  configs.web.env.staging.vars.PUBLIC_WORKSPACE_ACCESS = 'false';
+  assert.equal(validateDeployment(configs, 'staging').environment, 'staging');
+});
+
+test('public workspace access preserves live-provider, exact-origin and local-test safeguards', () => {
+  for (const [app, key, value, pattern] of [
+    ['web', 'PROVIDER_MODE', 'mock', /PROVIDER_MODE=live/],
+    ['realtime', 'PROVIDER_MODE', 'mock', /PROVIDER_MODE=live/],
+    ['web', 'ALLOW_LOCAL_SANDBOX_ENROLLMENT', 'true', /ALLOW_LOCAL_SANDBOX_ENROLLMENT/],
+    ['web', 'ALLOW_TEST_DIAGNOSTICS', 'true', /ALLOW_TEST_DIAGNOSTICS/],
+    ['realtime', 'FICTIONAL_LIVE_TEST', 'true', /FICTIONAL_LIVE_TEST/],
+    ['web', 'APP_ORIGIN', 'http://staging.example.com', /exact public HTTPS origin/],
+    ['web', 'APP_ORIGIN', 'https://staging.example.com/path', /exact public HTTPS origin/],
+    ['web', 'ACCESS_ISSUER', 'https://staff.example.com', /must be absent|to be absent/],
+    ['web', 'ACCESS_AUDIENCE', '', /must be absent|to be absent/],
+    ['web', 'PUBLIC_WORKSPACE_ACCESS', 'yes', /must be true or false/],
+  ]) {
+    const configs = publicWorkspaceFixture();
+    configs[app].env.staging.vars[key] = value;
+    assert.throws(() => validateDeployment(configs, 'staging'), pattern);
+  }
 });

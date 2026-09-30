@@ -9,27 +9,44 @@ export const DEFAULT_TEMPLATE: IntakeTemplate = { id: 'general-intake', version:
         { id: 'uncertainties', field: 'uncertainties', text: 'Is there anything you are uncertain about or have not measured?' },
         { id: 'callback', field: 'callback', text: 'What sample callback number should we note?' }
     ] };
+const extractionPolicyMessages = {
+    field_outside_template: 'Field outside template',
+    evidence_mismatch: 'Evidence quote does not match finalized transcript',
+    raw_wording_unsupported: 'Raw wording is unsupported',
+    value_unsupported: 'Value must preserve supported wording',
+    not_measured_as_denial: 'Not measured cannot be a denial',
+    uncertainty_as_reported: 'Uncertainty must be retained',
+    question_outside_template: 'Question outside template',
+} as const;
+export type ExtractionPolicyErrorCode = keyof typeof extractionPolicyMessages;
+/** Only fixed categories and messages cross the evidence-repair boundary. */
+export class ExtractionPolicyError extends Error {
+    constructor(readonly code: ExtractionPolicyErrorCode) {
+        super(extractionPolicyMessages[code]);
+        this.name = 'ExtractionPolicyError';
+    }
+}
 export function validateExtraction(value: unknown, turns: TranscriptTurn[], template: IntakeTemplate): Extraction {
     const result = ExtractionSchema.parse(value);
     const byId = new Map(turns.filter(t => t.final).map(t => [t.id, t]));
     for (const fact of result.facts) {
         if (!template.questions.some(q => q.field === fact.field))
-            throw new Error('Field outside template');
+            throw new ExtractionPolicyError('field_outside_template');
         for (const e of fact.evidence)
             if (!byId.get(e.turnId)?.text.includes(e.quote))
-                throw new Error('Evidence quote does not match finalized transcript');
+                throw new ExtractionPolicyError('evidence_mismatch');
         if (!fact.rawWording || !fact.evidence.some(e => e.quote.includes(fact.rawWording)))
-            throw new Error('Raw wording is unsupported');
+            throw new ExtractionPolicyError('raw_wording_unsupported');
         if (!fact.value || !fact.evidence.some(e => e.quote.includes(fact.value)))
-            throw new Error('Value must preserve supported wording');
+            throw new ExtractionPolicyError('value_unsupported');
         const wording = fact.evidence.map(e => e.quote).join(' ').toLowerCase();
         if (/(?:not|haven.t|have not|never).{0,20}(?:checked|measured|taken my temperature)/.test(wording) && fact.status === 'denied')
-            throw new Error('Not measured cannot be a denial');
+            throw new ExtractionPolicyError('not_measured_as_denial');
         if (/(?:not sure|unsure|don.t know|do not know|maybe|might)/.test(wording) && fact.status === 'reported')
-            throw new Error('Uncertainty must be retained');
+            throw new ExtractionPolicyError('uncertainty_as_reported');
     }
     if (result.nextQuestionId && !template.questions.some(q => q.id === result.nextQuestionId))
-        throw new Error('Question outside template');
+        throw new ExtractionPolicyError('question_outside_template');
     return result;
 }
 export function nextQuestion(template: IntakeTemplate, facts: IntakeFact[], asked: string[]): string | null { return template.questions.find(q => !facts.some(f => f.field === q.field && f.status !== 'not_asked') && asked.filter(id => id === q.id).length < 2)?.id ?? null; }

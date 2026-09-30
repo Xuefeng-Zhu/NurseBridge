@@ -97,8 +97,15 @@ export function validateDeployment(configs, environment) {
   const webVars = web.vars ?? {};
   const realtimeVars = realtime.vars ?? {};
   if (webVars.ALLOW_LOCAL_SANDBOX_ENROLLMENT !== 'false') errors.push('web: ALLOW_LOCAL_SANDBOX_ENROLLMENT must explicitly be false.');
-  if (!exactOrigin(webVars.ACCESS_ISSUER, 'https:')) errors.push('web: ACCESS_ISSUER must be an exact public HTTPS origin.');
-  if (typeof webVars.ACCESS_AUDIENCE !== 'string' || !webVars.ACCESS_AUDIENCE.trim() || webVars.ACCESS_AUDIENCE !== webVars.ACCESS_AUDIENCE.trim()) errors.push('web: a non-empty ACCESS_AUDIENCE is required.');
+  const publicWorkspace = webVars.PUBLIC_WORKSPACE_ACCESS === 'true';
+  if (webVars.PUBLIC_WORKSPACE_ACCESS !== undefined && !['true', 'false'].includes(webVars.PUBLIC_WORKSPACE_ACCESS)) errors.push('web: PUBLIC_WORKSPACE_ACCESS must be true or false when configured.');
+  if (publicWorkspace) {
+    if (environment !== 'staging') errors.push('web: PUBLIC_WORKSPACE_ACCESS is supported only in staging.');
+    if ('ACCESS_ISSUER' in webVars || 'ACCESS_AUDIENCE' in webVars) errors.push('web: public workspace access requires ACCESS_ISSUER and ACCESS_AUDIENCE to be absent.');
+  } else {
+    if (!exactOrigin(webVars.ACCESS_ISSUER, 'https:')) errors.push('web: ACCESS_ISSUER must be an exact public HTTPS origin.');
+    if (typeof webVars.ACCESS_AUDIENCE !== 'string' || !webVars.ACCESS_AUDIENCE.trim() || webVars.ACCESS_AUDIENCE !== webVars.ACCESS_AUDIENCE.trim()) errors.push('web: a non-empty ACCESS_AUDIENCE is required.');
+  }
   if (!exactOrigin(webVars.APP_ORIGIN, 'https:')) errors.push('web: APP_ORIGIN must be an exact public HTTPS origin without a path or trailing slash.');
   if (!exactOrigin(webVars.REALTIME_URL, 'wss:')) errors.push('web: REALTIME_URL must be an exact public WSS origin without a path or trailing slash.');
   if (realtimeVars.ALLOWED_ORIGINS !== webVars.APP_ORIGIN) errors.push('realtime: ALLOWED_ORIGINS must exactly equal this environment\'s web APP_ORIGIN.');
@@ -120,7 +127,10 @@ export function validateDeployment(configs, environment) {
     resources[app] = { database, bucket };
     if (!database || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(database.database_id ?? '')
       || !database.database_name || database.migrations_dir !== '../../packages/database/migrations') errors.push(`${app}: one explicit DB binding with a real D1 ID, name and repository migrations directory is required.`);
-    if (!bucket || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket.bucket_name ?? '')) errors.push(`${app}: one explicit EXPORTS binding with a valid R2 bucket name is required.`);
+    // New exports are direct downloads. Only realtime may retain a temporary
+    // bucket binding to finish deleting objects from an older deployment.
+    if (config.r2_buckets?.length && (app !== 'realtime' || config.r2_buckets.length !== 1 || !bucket
+      || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket.bucket_name ?? ''))) errors.push(`${app}: R2 is only supported as one realtime EXPORTS binding for legacy cleanup.`);
     const object = binding(config.durable_objects?.bindings, 'name', 'CALL_SESSIONS');
     if (!object || object.class_name !== 'CallSession' || (app === 'web' ? object.script_name !== realtime.name : !!object.script_name)
       || (object.environment && object.environment !== environment)) errors.push(`${app}: CALL_SESSIONS must reference this environment's realtime CallSession class.`);
@@ -140,7 +150,6 @@ export function validateDeployment(configs, environment) {
   }
   if (resources.web.database?.database_id !== resources.realtime.database?.database_id
     || resources.web.database?.database_name !== resources.realtime.database?.database_name) errors.push('web and realtime must bind the same environment D1 database.');
-  if (resources.web.bucket?.bucket_name !== resources.realtime.bucket?.bucket_name) errors.push('web and realtime must bind the same environment R2 bucket.');
   const service = binding(web.services, 'binding', 'REALTIME');
   if (!service || service.service !== realtime.name || (service.environment && service.environment !== environment)) errors.push('web: REALTIME service binding must target this environment\'s realtime Worker.');
 

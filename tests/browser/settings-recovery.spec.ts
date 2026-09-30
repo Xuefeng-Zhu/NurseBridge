@@ -190,8 +190,8 @@ test('configuration persists, isolates drafts, and governs new calls and exports
   const consent = await page.request.post(`${baseURL}/api/calls/${call.id}/consent`, { headers, data: { commandId: crypto.randomUUID(), accepted: true } });
   expect(consent.status()).toBe(409);
   const exported = await page.request.post(`${baseURL}/api/calls/${call.id}/export`, { headers, data: { format: 'json' } });
-  expect(exported.status()).toBe(201);
-  expect((await exported.json()).expiresAt).toBe(call.expiresAt);
+  expect(exported.status()).toBe(200);
+  expect(await exported.json()).toMatchObject({ id: call.id, expiresAt: call.expiresAt });
   const saved = await (await page.request.get(settingsURL)).json();
   expect(saved.workspaceExpiresAt).toBeGreaterThanOrEqual(call.expiresAt);
 });

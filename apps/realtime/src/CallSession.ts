@@ -2,7 +2,7 @@ import { workspacePreferences, automatedIntakeAllowed, type WorkspacePreferences
 import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
 import { EMERGENCY_COPY, FieldSchema, ProposedFactSchema, type IntakeTemplate, type TranscriptTurn, type RpcResult } from '@nursebridge/contracts';
-import { assessCollection, markQuestion, mockExtraction, validateExtraction } from '@nursebridge/intake-policy';
+import { assessCollection, ExtractionPolicyError, markQuestion, mockExtraction, validateExtraction } from '@nursebridge/intake-policy';
 import { AudioStreamKind, decodeAudioFrame, encodeAudioFrame, type AudioFrame } from '@nursebridge/audio-client/protocol';
 import { SessionStore } from './persistence/store';
 import { projectSnapshot } from './persistence/project';
@@ -10,6 +10,8 @@ import { connectVoiceAgent, deleteVoiceAgentSession, type VoiceAgent, type Voice
 import { liveActivationIssues } from './providers/readiness';
 import { intakePrompt, intakeOpening, intakeAcknowledgment, INTAKE_TOOLS, explicitRequest } from './intake-agent';
 import { extract } from './providers/nebius';
+import { extractAssemblyAI } from './providers/assemblyai-llm';
+import { ExtractionError } from './providers/chat-extraction';
 import { newState, transition, requestHandoff, applyFacts, CommandError, fail, type CallState, type Command, type Role } from './state';
 import type { Env } from './env';
 import { PhoneTransport } from './telephony/transport';
@@ -272,6 +274,7 @@ export class CallSession extends DurableObject<Env>{
   }catch(error){return errorResult(error);}
  }
  async reserveExport(input:{workspaceId:string;exportId:string;key:string;expiresAt?:number}):Promise<RpcResult>{
+  if(!this.env.EXPORTS)return{ok:false,status:410,code:'saved_exports_disabled',error:'Saved exports are disabled. Download the case directly.'};
   try{const state=this.scoped(input.workspaceId);if(!input.key.startsWith(`${state.workspaceId}/${state.id}/`))fail(400,'export_key','Invalid export key.');this.store.storage.sql.exec('INSERT OR IGNORE INTO export_reservations(id,object_key,status) VALUES(?,?,?)',input.exportId,input.key,'reserved');return{ok:true,snapshot:this.visibleSnapshot()};}catch(error){return errorResult(error);}
  }
  async finalizeExport(input:{workspaceId:string;exportId:string;key:string}):Promise<RpcResult>{
@@ -529,7 +532,7 @@ export class CallSession extends DurableObject<Env>{
    const valid=()=>this.providerConnection===connectionId&&this.state?.conversationOwner==='AI'&&!this.state?.deleted&&Date.now()<this.state!.callDeadlineAt;
    this.mutate(s=>{s.providerSession={status:'connecting',agentId:this.env.VOICE_AGENT_ID,agentVersion:this.env.VOICE_AGENT_VERSION};},'provider-connecting','Connecting the configured Voice Agent.');
    try{
-    const connection=await connectVoiceAgent({apiKey:this.env.ASSEMBLYAI_API_KEY!,agentId:this.env.VOICE_AGENT_ID!,systemPrompt:intakePrompt(state),tools:INTAKE_TOOLS},{
+    const connection=await connectVoiceAgent({apiKey:this.env.ASSEMBLYAI_API_KEY!,agentId:this.env.VOICE_AGENT_ID!,llmProvider:this.env.LLM_PROVIDER,systemPrompt:intakePrompt(state),tools:INTAKE_TOOLS},{
      sessionCreated:({sessionId})=>{if(!this.state)return;this.ctx.storage.transactionSync(()=>{this.store.storage.sql.exec('INSERT OR IGNORE INTO provider_cleanup(session_id,expires_at) VALUES(?,?)',sessionId,this.state!.expiresAt);this.store.storage.sql.exec('DELETE FROM provider_connections WHERE attempt_id=?',attemptId);});if(this.state.deleted)this.ctx.waitUntil(this.cleanupProviderSessions().then(()=>this.scheduleAlarm()));},
      unidentifiedSession:()=>{this.store.storage.sql.exec("UPDATE provider_connections SET status='manual_reconciliation_required' WHERE attempt_id=?",attemptId);if(this.state&&!this.state.deleted)this.gap('Provider session identity could not be confirmed. Recording cleanup requires operator reconciliation.');},
      ready:({sessionId})=>{if(!valid())return;this.mutate(s=>{s.provider.connected=true;s.provider.sessionId=sessionId;s.provider.medicalMode='unavailable';s.provider.warning=null;s.providerSession={...s.providerSession,status:'active',id:sessionId,startedAt:Date.now()};s.intakeState='IN_PROGRESS';s.aiStatus='listening';},'provider-ready','Voice Agent ready; no Medical Mode claim.');this.publish();this.startVoiceOpening();},
@@ -662,16 +665,28 @@ export class CallSession extends DurableObject<Env>{
   if(!this.state||this.state.conversationOwner!=='AI')return;
   const epoch=this.state.controlEpoch;const generation=this.state.responseGeneration;const startedAt=Date.now();
   const source=structuredClone(this.state);const extractionAbort=new AbortController();this.extractionAbort=extractionAbort;
+  let checked:ReturnType<typeof validateExtraction>;
   try{
-   const output=source.mode==='mock'?mockExtraction(source.turns.at(-1)!,source.currentQuestion,source.template):await extract({apiKey:this.env.NEBIUS_API_KEY??'',model:this.env.EXTRACTION_MODEL,signal:extractionAbort.signal,validate:candidate=>validateExtraction(candidate,source.turns,source.template)},{allowedFields:source.template.questions.map(q=>q.field),allowedQuestions:source.template.questions.map(q=>({id:q.id,field:q.field})),turns:source.turns.slice(-20),currentFacts:source.facts});
-   const checked=validateExtraction(output,source.turns,source.template);
+   const question=source.template.questions.find(q=>q.id===source.currentQuestion);
+   const provider=this.env.LLM_PROVIDER??'nebius';
+   if(provider!=='nebius'&&provider!=='assemblyai')throw new ExtractionError('configuration','Intake model provider is not configured.');
+   const extractIntake=provider==='assemblyai'?extractAssemblyAI:extract;
+   const output=source.mode==='mock'?mockExtraction(source.turns.at(-1)!,source.currentQuestion,source.template):await extractIntake({apiKey:(provider==='assemblyai'?this.env.ASSEMBLYAI_API_KEY:this.env.NEBIUS_API_KEY)??'',model:this.env.EXTRACTION_MODEL,signal:extractionAbort.signal,validate:candidate=>validateExtraction(candidate,source.turns,source.template)},{allowedFields:source.template.questions.map(q=>q.field),allowedQuestions:source.template.questions.map(q=>({id:q.id,field:q.field})),currentQuestion:question?{id:question.id,field:question.field,text:question.text}:null,turns:source.turns.slice(-20),currentFacts:source.facts});
+   checked=validateExtraction(output,source.turns,source.template);
+  }catch(error){
    if(!this.current(epoch,generation))return;
-   this.mutate(s=>{applyFacts(s,checked.facts,Date.now());s.providerSession.lastFinalizedTurnId=source.turns.at(-1)?.id;s.timings={...s.timings,extractionMs:Date.now()-startedAt};},'draft-revised','Evidence-linked intake draft updated; nurse review remains required.');
-  }catch{
-   if(!this.current(epoch,generation))return;
-   this.providerFailure('extraction_validation_failed');return;
+   const code=error instanceof ExtractionError?`extraction_${error.code}`:error instanceof z.ZodError?'extraction_schema':error instanceof ExtractionPolicyError?'extraction_evidence':'extraction_internal_error';
+   this.providerFailure(code);return;
   }finally{if(this.extractionAbort===extractionAbort)this.extractionAbort=undefined;}
   if(!this.current(epoch,generation))return;
+  // A storage failure is not an invalid provider answer. Keep the validated
+  // draft commit atomic, and never advance the evidence watermark on failure.
+  try{
+   this.mutate(s=>{applyFacts(s,checked.facts,Date.now());s.providerSession.lastFinalizedTurnId=source.turns.at(-1)?.id;s.timings={...s.timings,extractionMs:Date.now()-startedAt};},'draft-revised','Evidence-linked intake draft updated; nurse review remains required.');
+  }catch{
+   if(this.current(epoch,generation))this.providerFailure('intake_storage_failed');
+   return;
+  }
   this.mutate(s=>{assessCollection(s);},'collection-progress','Collection progress checked against validated evidence.');
   const action=assessCollection(structuredClone(this.state!));
   if(action.type==='handoff'){this.waitForNurse('unresolved_answer',`The ${action.field} answer remains unresolved after one clarification.`);return;}
@@ -768,7 +783,7 @@ export class CallSession extends DurableObject<Env>{
    this.store.commit(this.state!,'deleted','Case deleted.');
   });
   this.scrubDeletedPhone();
-  for(const row of keys){try{await this.env.EXPORTS?.delete(row.object_key);this.store.storage.sql.exec('DELETE FROM export_reservations WHERE object_key=?',row.object_key);}catch{/* Alarm retries object deletion. */}}
+  for(const row of keys){try{if(!this.env.EXPORTS)continue;await this.env.EXPORTS.delete(row.object_key);this.store.storage.sql.exec('DELETE FROM export_reservations WHERE object_key=?',row.object_key);}catch{/* Alarm retries object deletion. */}}
   await this.cleanupProviderSessions();this.broadcast({type:'deleted'});for(const socket of this.ctx.getWebSockets())socket.close(1000,'Case deleted');await this.flushProjection();
  }
  private async scheduleAlarm(){
@@ -785,7 +800,7 @@ export class CallSession extends DurableObject<Env>{
   const state=this.state;if(!state)return;const now=Date.now();
   await this.retryPhoneTermination();
   if(!state.deleted&&now>=state.expiresAt){this.mutate(s=>{s.deleted=true;s.queueState='CLOSED';s.conversationOwner='NONE';s.controlEpoch++;s.responseGeneration++;},'retention-expired','Case retention expired.');await this.eraseContent();return;}
-  if(state.deleted){await this.cleanupProviderSessions();for(const row of this.store.storage.sql.exec<{object_key:string}>('SELECT object_key FROM export_reservations').toArray()){try{await this.env.EXPORTS?.delete(row.object_key);this.store.storage.sql.exec('DELETE FROM export_reservations WHERE object_key=?',row.object_key);}catch{}}await this.flushProjection();await this.scheduleAlarm();return;}
+  if(state.deleted){await this.cleanupProviderSessions();for(const row of this.store.storage.sql.exec<{object_key:string}>('SELECT object_key FROM export_reservations').toArray()){try{if(!this.env.EXPORTS)continue;await this.env.EXPORTS.delete(row.object_key);this.store.storage.sql.exec('DELETE FROM export_reservations WHERE object_key=?',row.object_key);}catch{}}await this.flushProjection();await this.scheduleAlarm();return;}
   if(this.state&&this.state.queueState!=='CLOSED'&&now>=this.state.callDeadlineAt){this.mutate(s=>{s.queueState='CLOSED';s.conversationOwner='NONE';s.aiStatus='stopped';s.controlEpoch++;s.responseGeneration++;delete s.handoff;s.warnings.push('Call duration limit reached. The call is closed operationally; this is not a clinical disposition.');},'duration-limit','Call duration limit reached.');this.abortAi('duration-limit',false);this.stopProvider();this.requestPhoneTermination();this.publish();for(const socket of this.ctx.getWebSockets())socket.close(1000,'Call duration limit reached');}
   for(const socket of this.ctx.getWebSockets()){const a=socket.deserializeAttachment() as Attachment|null;if(a&&(a.expiresAt<now||a.authenticated&&now-a.lastHeartbeat>30000)){this.disconnected(socket);socket.close(1008,'Heartbeat or session expired');}}
   if(this.state?.handoff&&this.state.handoff.deadline<now){this.mutate(s=>{delete s.handoff;s.conversationOwner='NONE';s.aiStatus='stopped';s.humanRequested=true;s.controlEpoch++;s.responseGeneration++;},'handoff-timeout','Human audio checks timed out. Caller session preserved; retry available.');this.abortAi('handoff-timeout',false);this.stopProvider();this.publish();}

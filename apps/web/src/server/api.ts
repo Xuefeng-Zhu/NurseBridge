@@ -21,11 +21,12 @@ export async function createSession(request: Request) {
     const bindings = env();
     origin(request, bindings);
     const data = await body(request);
+    const enrollment = enrollmentMode(request, bindings);
     const localStaffAccess = z.boolean().optional().parse(data.localStaffAccess) === true;
     if (localStaffAccess && enrollmentMode(request, bindings) !== 'sandbox')
         throw new HttpError(403, 'Local staff access is available only in an enabled local sandbox');
     if (localStaffAccess && data.invitation) throw new HttpError(400, 'Open the invitation before switching local roles');
-    if (!data.invitation && enrollmentMode(request, bindings) !== 'sandbox')
+    if (!data.invitation && enrollment === 'closed')
         throw new HttpError(403, 'Workspace creation is available only in an enabled local sandbox');
     const now = Date.now();
     await rateLimit(bindings, 'session:' + await hash(request.headers.get('cf-connecting-ip') ?? 'local'), 30, 3600000);
@@ -66,7 +67,7 @@ export async function createSession(request: Request) {
             throw new HttpError(410, 'Invitation expired or already used');
         // Authenticate staff before consuming the single-use invitation. The conditional
         // update still arbitrates concurrent redemptions after identity verification.
-        if (invite.role === 'nurse') await requireStaffAccess(request, bindings);
+        if (invite.role === 'nurse') await requireStaffAccess(request, bindings, invite.workspace_id);
         const redeemedAt = Date.now();
         const redeemed = await bindings.DB.prepare('UPDATE invitations SET redeemed_by=? WHERE token_hash=? AND workspace_id=? AND role=? AND redeemed_by IS NULL AND expires_at>? AND EXISTS(SELECT 1 FROM workspaces WHERE id=invitations.workspace_id AND expires_at>?) RETURNING workspace_id,role').bind(participantId, invitationHash, invite.workspace_id, invite.role, redeemedAt, redeemedAt).first();
         if (!redeemed) throw new HttpError(410, 'Invitation expired or already used');
@@ -74,7 +75,7 @@ export async function createSession(request: Request) {
         role = invite.role;
     }
     else if (!recoveredWorkspaceId) {
-        await bindings.DB.batch([bindings.DB.prepare('INSERT INTO workspaces(id,created_at,expires_at) VALUES(?,?,?)').bind(workspaceId, now, now + RETENTION_MS), bindings.DB.prepare('INSERT INTO template_versions(id,workspace_id,version,body_json,created_at) VALUES(?,?,?,?,?)').bind(DEFAULT_TEMPLATE.id, workspaceId, 1, JSON.stringify(DEFAULT_TEMPLATE), now)]);
+        await bindings.DB.batch([bindings.DB.prepare('INSERT INTO workspaces(id,created_at,expires_at,settings_json) VALUES(?,?,?,?)').bind(workspaceId, now, now + RETENTION_MS, JSON.stringify(enrollment === 'public' ? { publicAccess: true } : {})), bindings.DB.prepare('INSERT INTO template_versions(id,workspace_id,version,body_json,created_at) VALUES(?,?,?,?,?)').bind(DEFAULT_TEMPLATE.id, workspaceId, 1, JSON.stringify(DEFAULT_TEMPLATE), now)]);
     }
     await bindings.DB.batch([bindings.DB.prepare('INSERT INTO participants(id,workspace_id,role,created_at) VALUES(?,?,?,?)').bind(participantId, workspaceId, role, now), bindings.DB.prepare('INSERT INTO sessions(token_hash,workspace_id,participant_id,role,expires_at) VALUES(?,?,?,?,?)').bind(tokenHash, workspaceId, participantId, role, now + SESSION_MS)]);
     const preserved = await preserveLegacySessionCookie(request, bindings, role);
@@ -189,24 +190,20 @@ export async function updateSettings(request: Request) {
 }
 export async function exportCase(request: Request, id: string) {
     const { bindings, user, data } = await mutation(request, ['admin', 'nurse']);
-    const call = await authoritative(bindings, user, id);
     const format = z.enum(['json', 'markdown']).parse(data.format ?? 'json');
-    const exportId = crypto.randomUUID(), key = user.workspaceId + '/' + id + '/' + exportId + '.' + (format === 'json' ? 'json' : 'md');
-    const expiresAt = call.expiresAt;
-    unwrap(await callObject(bindings, id).reserveExport({ workspaceId: user.workspaceId, exportId, key, expiresAt }));
-    await bindings.DB.prepare('INSERT INTO exports(id,call_id,workspace_id,object_key,status,expires_at) VALUES(?,?,?,?,?,?)').bind(exportId, id, user.workspaceId, key, 'pending', expiresAt).run();
+    const call = await authoritative(bindings, user, id);
+    // Do not depend on the retention alarm having run before serving a download.
+    if (call.expiresAt <= Date.now()) throw new HttpError(410, 'Case retention expired');
     const content = format === 'json' ? JSON.stringify(call, null, 2) : ['# NurseBridge case', DISCLOSURE, ...call.facts.map(f => `\n## ${f.field}\n${f.value}\nStatus: ${f.status}\n${f.evidence.map(e => `Source ${e.turnId}: ${e.quote}`).join('\n')}`)].join('\n');
-    await bindings.EXPORTS.put(key, content, { httpMetadata: { contentType: format === 'json' ? 'application/json' : 'text/markdown' } });
-    const finalized = await callObject(bindings, id).finalizeExport({ workspaceId: user.workspaceId, exportId, key });
-    if (!finalized.ok) {
-        await bindings.EXPORTS.delete(key);
-        throw new HttpError(410, 'Case was deleted while exporting');
-    }
-    await bindings.DB.prepare('UPDATE exports SET status=\'ready\' WHERE id=? AND workspace_id=? AND NOT EXISTS(SELECT 1 FROM deletion_tombstones WHERE call_id=?)').bind(exportId, user.workspaceId, id).run();
-    return json({ id: exportId, url: '/api/calls/' + id + '/export/' + exportId, expiresAt }, 201);
+    return new Response(content, { headers: {
+        'Cache-Control': 'private, no-store',
+        'Content-Type': format === 'json' ? 'application/json; charset=utf-8' : 'text/markdown; charset=utf-8',
+        'Content-Disposition': `attachment; filename="nursebridge-${id}.${format === 'json' ? 'json' : 'md'}"`,
+        'X-Content-Type-Options': 'nosniff',
+    } });
 }
-export async function downloadExport(request: Request, id: string, exportId: string) { const bindings = env(), user = await session(request, bindings, ['admin', 'nurse']); await authoritative(bindings, user, id); const row = await bindings.DB.prepare('SELECT object_key FROM exports WHERE id=? AND call_id=? AND workspace_id=? AND status=\'ready\' AND expires_at>? AND NOT EXISTS(SELECT 1 FROM deletion_tombstones WHERE call_id=?)').bind(exportId, id, user.workspaceId, Date.now(), id).first<{
-    object_key: string;
-}>(); if (!row)
-    throw new HttpError(404, 'Export not found'); const object = await bindings.EXPORTS.get(row.object_key); if (!object)
-    throw new HttpError(404, 'Export expired'); return new Response(object.body, { headers: { 'Cache-Control': 'private, no-store', 'Content-Type': object.httpMetadata?.contentType ?? 'application/json', 'Content-Disposition': 'attachment; filename="case.' + (row.object_key.endsWith('.md') ? 'md' : 'json') + '"', 'X-Content-Type-Options': 'nosniff' } }); }
+export async function downloadExport(request: Request, id: string): Promise<never> {
+    const bindings = env(), user = await session(request, bindings, ['admin', 'nurse']);
+    await authoritative(bindings, user, id);
+    throw new HttpError(410, 'Saved export links are no longer available. Export the case again to download a fresh copy.');
+}

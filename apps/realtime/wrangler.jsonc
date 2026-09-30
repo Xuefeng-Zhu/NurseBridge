@@ -74,20 +74,14 @@
           "migrations_dir": "../../packages/database/migrations"
         }
       ],
-      "r2_buckets": [
-        {
-          "binding": "EXPORTS",
-          "bucket_name": "nursebridge-exports-staging"
-        }
-      ],
       "vars": {
         "PROVIDER_MODE": "live",
         "ALLOWED_ORIGINS": "https://nursebridge-web-staging.pullthread-commerce-worker.workers.dev",
         "MAX_CALL_SECONDS": "600",
         "RETENTION_SECONDS": "604800",
         "EXTRACTION_MODEL": "nvidia/Nemotron-3_5-Lightning",
-        "VOICE_AGENT_ID": "",
-        "VOICE_AGENT_VERSION": "",
+        "VOICE_AGENT_ID": "agent_3163c2eb3794484b8d4c780107615e94",
+        "VOICE_AGENT_VERSION": "nursebridge-voice-v1",
         "VOICE_AGENT_COMPATIBILITY_VERIFIED": "false",
         "PHONE_INBOUND_ENABLED": "false",
         "TWILIO_ACCOUNT_SID": "",
@@ -99,11 +93,13 @@
         "MAX_LIVE_CONCURRENCY": "4",
         "DAILY_AUDIO_MINUTES": "120",
         "ALLOW_TEST_DIAGNOSTICS": "false",
-        "FICTIONAL_LIVE_TEST": "false"
+        "FICTIONAL_LIVE_TEST": "false",
+        "LLM_PROVIDER": "nebius"
       },
       "account_id": "62694a02d05e9f529bba1664135adc2f",
       "workers_dev": true,
-      "preview_urls": false
+      "preview_urls": false,
+      "r2_buckets": []
     },
     "production": {
       "name": "nursebridge-realtime-production",

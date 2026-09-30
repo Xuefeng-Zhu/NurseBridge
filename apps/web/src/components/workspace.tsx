@@ -25,7 +25,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 export function mutate<T>(path: string, body: Record<string, unknown> = {}, method = "POST") {
   return api<T>(path, { method, body: JSON.stringify({ commandId: crypto.randomUUID(), ...body }) });
 }
-type WorkspaceContext = { enrollmentMode: "sandbox" | "closed"; session: Session | null; mode: "mock" | "live" | null; realtimeUrl: string; diagnostics: boolean; loading: boolean; error: string | null; hasInvitation: boolean; verificationReady: boolean; turnstileSiteKey: string | null; verificationAttempt: number; setVerificationToken: (token: string | null) => void; refresh: () => Promise<SessionResponse | null>; retry: () => Promise<void>; create: (invitation?: string) => Promise<void> };
+type WorkspaceContext = { enrollmentMode: "sandbox" | "public" | "closed"; session: Session | null; mode: "mock" | "live" | null; realtimeUrl: string; diagnostics: boolean; loading: boolean; error: string | null; hasInvitation: boolean; verificationReady: boolean; turnstileSiteKey: string | null; verificationAttempt: number; setVerificationToken: (token: string | null) => void; refresh: () => Promise<SessionResponse | null>; retry: () => Promise<void>; create: (invitation?: string) => Promise<void> };
 const Context = createContext<WorkspaceContext | null>(null);
 export function useWorkspace() { const context = useContext(Context); if (!context) throw new Error("Workspace provider is missing."); return context; }
 
@@ -42,7 +42,7 @@ function WorkspaceSession({ children, view }: { children: ReactNode; view: Works
   const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
   const [verificationToken, setVerificationToken] = useState<string | null>(null);
   const [verificationAttempt, setVerificationAttempt] = useState(0);
-  const [enrollmentMode, setEnrollmentMode] = useState<"sandbox" | "closed">("closed");
+  const [enrollmentMode, setEnrollmentMode] = useState<"sandbox" | "public" | "closed">("closed");
   const [configurationReady, setConfigurationReady] = useState(false);
   const [pendingInvitation, setPendingInvitation] = useState<string | null>(null);
   const initialized = useRef(false);
@@ -74,7 +74,7 @@ function WorkspaceSession({ children, view }: { children: ReactNode; view: Works
   }, [refresh]);
   const create = useCallback(async (invitation?: string) => {
     if (!configurationReady) throw new Error("Workspace configuration is unavailable. Reload to try again.");
-    if (!invitation && !pendingInvitation && enrollmentMode !== "sandbox") throw new Error("Use a workspace invitation from your administrator.");
+    if (!invitation && !pendingInvitation && enrollmentMode === "closed") throw new Error("Use a workspace invitation from your administrator.");
     if (turnstileSiteKey && !verificationToken) throw new Error("Complete the verification before opening your workspace.");
     await issueSession(invitation || pendingInvitation || undefined, verificationToken || undefined);
   }, [configurationReady, enrollmentMode, turnstileSiteKey, verificationToken, pendingInvitation, issueSession]);
@@ -83,7 +83,7 @@ function WorkspaceSession({ children, view }: { children: ReactNode; view: Works
     const load = async () => {
       setLoading(true); setError(null);
       try {
-        const configuration = await api<{ appOrigin?: string; turnstileSiteKey: string | null; enrollmentMode: "sandbox" | "closed" }>("/api/demo/config");
+        const configuration = await api<{ appOrigin?: string; turnstileSiteKey: string | null; enrollmentMode: "sandbox" | "public" | "closed" }>("/api/demo/config");
         const canonicalURL = canonicalLocalWorkspaceURL(window.location.href, configuration.appOrigin);
         if (canonicalURL) {
           const destination = new URL(canonicalURL);
@@ -93,7 +93,7 @@ function WorkspaceSession({ children, view }: { children: ReactNode; view: Works
           window.location.replace(destination.href);
           return;
         }
-        setTurnstileSiteKey(configuration.turnstileSiteKey); setEnrollmentMode(configuration.enrollmentMode === "sandbox" ? "sandbox" : "closed"); setConfigurationReady(true);
+        setTurnstileSiteKey(configuration.turnstileSiteKey); setEnrollmentMode(configuration.enrollmentMode === "sandbox" || configuration.enrollmentMode === "public" ? configuration.enrollmentMode : "closed"); setConfigurationReady(true);
         if (invitation) { if (configuration.turnstileSiteKey) setLoading(false); else await issueSession(invitation); }
         else {
           const current = await refresh();
@@ -157,7 +157,7 @@ const navigation: { href: string; label: string; icon: IconName }[] = [
 export function Shell({ children }: { children: ReactNode }) {
   const path = usePathname();
   const { mode, session, enrollmentMode } = useWorkspace();
-  const localWorkspace = enrollmentMode === "sandbox";
+  const localWorkspace = enrollmentMode === "sandbox" || enrollmentMode === "public";
   const links = localWorkspace ? [...navigation, { href: "/caller", label: "Caller page", icon: "phone" as const }] : navigation;
   const callerView = path === "/caller" || session?.role === "caller";
   return <div className={`application ${callerView ? "caller-application" : "staff-application"}`}>
@@ -190,13 +190,13 @@ export function AuthGate({ children, callerAllowed = true, audience = "staff" }:
   if ((!session || hasInvitation) && error) return <div className="welcome-card"><div className="eyebrow">{caller ? "CALL CONNECTION" : "WORKSPACE CONNECTION"}</div><h1>{caller ? "Your call couldn’t open." : "Workspace temporarily unavailable."}</h1><p>{caller ? "We couldn’t open your call invitation. Try again in a moment." : "We couldn’t open your workspace. Try again in a moment."}</p><Notice kind="error">{error}</Notice><button className="button primary" onClick={() => void retry()}>{caller ? "Retry opening call" : "Retry opening workspace"} <Icon name="arrow" size={17} /></button></div>;
   if (!session || hasInvitation) return <div className="welcome-card">
     <div className="eyebrow">{caller ? "YOUR CALL" : "CARE TEAM ACCESS"}</div>
-    <h1>{caller ? hasInvitation ? "Your call is almost ready." : "Open your call invitation." : "Your care team workspace."}</h1>
-    <p>{hasInvitation ? "Complete verification to securely open your invitation." : caller ? "Use the private invitation sent by your care team to start your call. If you haven’t received a link, contact your care team." : enrollmentMode === "sandbox" ? "Open a workspace to manage incoming calls, review intake, and connect with callers." : "Access is managed by your workspace administrator. Open your invitation to continue; staff access also requires organization sign-in."}</p>
-    {(hasInvitation || !caller && enrollmentMode === "sandbox") && <><Verification /><button className="button primary" disabled={!verificationReady} onClick={() => void create().catch(() => undefined)}>{hasInvitation ? caller ? "Open call invitation" : "Open workspace invitation" : "Create local workspace"} <Icon name="arrow" size={17} /></button></>}
+    <h1>{caller ? hasInvitation ? "Your call is almost ready." : enrollmentMode === "public" ? "Start your call." : "Open your call invitation." : "Your care team workspace."}</h1>
+    <p>{hasInvitation ? "Complete verification to securely open your invitation." : caller ? enrollmentMode === "public" ? "Open your own workspace to start a call, or use an invitation to join another workspace." : "Use the private invitation sent by your care team to start your call. If you haven’t received a link, contact your care team." : enrollmentMode !== "closed" ? "Open a workspace to manage incoming calls, review intake, and connect with callers." : "Access is managed by your workspace administrator. Open your invitation to continue; staff access also requires organization sign-in."}</p>
+    {(hasInvitation || enrollmentMode === "public" || !caller && enrollmentMode === "sandbox") && <><Verification /><button className="button primary" disabled={!verificationReady} onClick={() => void create().catch(() => undefined)}>{hasInvitation ? caller ? "Open call invitation" : "Open workspace invitation" : enrollmentMode === "public" ? "Open workspace" : "Create local workspace"} <Icon name="arrow" size={17} /></button></>}
     {!caller && <Link href="/caller" className="text-link">Joining as a caller? <Icon name="arrow" size={14} /></Link>}
     <p className="fine-print">{caller ? "Your microphone stays off until you choose to enable it." : "Caller invitations open a separate call page with access limited to that caller."}</p>
   </div>;
-  if (!callerAllowed && session.role === "caller") return <div className="welcome-card"><h1>This invitation is for a caller.</h1><p>Your private session does not include nurse or administrator access.</p><Link className="button primary" href="/caller">Open your call <Icon name="arrow" size={17} /></Link></div>;
+  if (!callerAllowed && session.role === "caller") return <div className="welcome-card"><h1>This invitation is for a caller.</h1><p>Your private session does not include nurse or administrator access.</p><Link className="button primary" href="/caller">Open your call <Icon name="arrow" size={17} /></Link>{enrollmentMode === "public" && <><p>To use nurse tools, open a separate workspace. Your caller invitation stays limited to its original workspace.</p><Verification /><button className="button secondary" disabled={!verificationReady} onClick={() => void create().catch(() => undefined)}>Open a separate workspace <Icon name="arrow" size={17} /></button></>}</div>;
   return <>{error && <Notice kind="error">{error}<button className="text-link" onClick={() => void refresh()}>Retry workspace status</button></Notice>}{children}</>;
 }
 export function Notice({ children, kind = "info" }: { children: ReactNode; kind?: "info" | "error" | "warning" }) { return <div className={`notice ${kind}`} role={kind === "error" ? "alert" : "status"}><Icon name={kind === "info" ? "file" : "warning"} size={18} /><div>{children}</div></div>; }

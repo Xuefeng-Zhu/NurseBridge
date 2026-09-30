@@ -1,8 +1,13 @@
 # Explicit mock mode. A fictional-only local live test can set FICTIONAL_LIVE_TEST=true
 # with PROVIDER_MODE=live on both Workers and loopback-only realtime ALLOWED_ORIGINS.
 PROVIDER_MODE=mock
+# assemblyai uses the managed conversational model and Qwen through its LLM Gateway.
+# nebius preserves the original custom model for both conversation and extraction.
+LLM_PROVIDER=nebius
 ASSEMBLYAI_API_KEY=
 NEBIUS_API_KEY=
+# Optional extraction override; defaults to Qwen for assemblyai or Nemotron for nebius.
+# EXTRACTION_MODEL=nvidia/Nemotron-3_5-Lightning
 VOICE_AGENT_ID=
 VOICE_AGENT_VERSION=
 VOICE_AGENT_COMPATIBILITY_VERIFIED=false

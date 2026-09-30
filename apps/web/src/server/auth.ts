@@ -8,8 +8,17 @@ const CALLER_COOKIE = 'nb_caller_session';
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 let accessKeys: { issuer: string; keys: ReturnType<typeof createRemoteJWKSet> } | undefined;
 
-/** This exception is only for an explicitly enabled, directly addressed local sandbox. */
-export function enrollmentMode(request: Request, bindings: AppEnv): 'sandbox' | 'closed' {
+/** Hosted self-service and local enrollment require explicit, exact-origin configuration. */
+export function enrollmentMode(request: Request, bindings: AppEnv): 'sandbox' | 'public' | 'closed' {
+    if (bindings.PUBLIC_WORKSPACE_ACCESS === 'true') {
+        if (bindings.ACCESS_ISSUER || bindings.ACCESS_AUDIENCE) return 'closed';
+        try {
+            const configured = new URL(bindings.APP_ORIGIN);
+            const actual = new URL(request.url);
+            if (configured.protocol === 'https:' && configured.origin === bindings.APP_ORIGIN
+                && actual.origin === configured.origin) return 'public';
+        } catch { return 'closed'; }
+    }
     if (bindings.ALLOW_LOCAL_SANDBOX_ENROLLMENT !== 'true' || bindings.ACCESS_ISSUER || bindings.ACCESS_AUDIENCE)
         return 'closed';
     try {
@@ -21,8 +30,15 @@ export function enrollmentMode(request: Request, bindings: AppEnv): 'sandbox' | 
     catch { return 'closed'; }
 }
 
-export async function requireStaffAccess(request: Request, bindings: AppEnv): Promise<void> {
-    if (enrollmentMode(request, bindings) === 'sandbox') return;
+export async function requireStaffAccess(request: Request, bindings: AppEnv, workspaceId?: string): Promise<void> {
+    const enrollment = enrollmentMode(request, bindings);
+    if (enrollment === 'sandbox') return;
+    // Existing protected memberships and invitations retain their Access requirement.
+    if (enrollment === 'public' && workspaceId) {
+        const workspace = await bindings.DB.prepare("SELECT json_extract(settings_json,'$.publicAccess') AS public_access FROM workspaces WHERE id=? AND expires_at>?").bind(workspaceId, Date.now()).first<{ public_access: number | null }>();
+        if (workspace?.public_access === 1) return;
+        throw new HttpError(401, 'Open a new workspace');
+    }
     const issuer = bindings.ACCESS_ISSUER;
     const audience = bindings.ACCESS_AUDIENCE;
     try {
@@ -86,7 +102,7 @@ export async function session(request: Request, bindings: AppEnv, roles?: Role[]
         // verified database membership can establish that identity's role.
         if (!user || !allowed.includes(user.role)) continue;
         if (roles && !roles.includes(user.role)) throw new HttpError(403, 'This action requires a staff role');
-        if (user.role !== 'caller') await requireStaffAccess(request, bindings);
+        if (user.role !== 'caller') await requireStaffAccess(request, bindings, user.workspaceId);
         return user;
     }
     throw new HttpError(401, hasCookie ? 'Workspace session expired' : 'Workspace access is required');

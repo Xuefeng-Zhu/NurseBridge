@@ -25,9 +25,11 @@ export function liveActivationIssues(env: Env): string[] {
     && env.FICTIONAL_LIVE_TEST === 'true'
     && isLoopbackOnlyAllowedOrigins(env.ALLOWED_ORIGINS ?? '');
   if (!env.ASSEMBLYAI_API_KEY?.trim()) issues.push('assemblyai_key_missing');
-  if (!env.NEBIUS_API_KEY?.trim()) issues.push('nebius_key_missing');
+  const provider = env.LLM_PROVIDER ?? 'nebius';
+  if (provider !== 'nebius' && provider !== 'assemblyai') issues.push('llm_provider_invalid');
+  if (provider === 'nebius' && !env.NEBIUS_API_KEY?.trim()) issues.push('nebius_key_missing');
   if (!env.VOICE_AGENT_ID?.trim() || !env.VOICE_AGENT_VERSION?.trim()) issues.push('versioned_agent_missing');
-  if (!fictionalLocalTest && env.VOICE_AGENT_COMPATIBILITY_VERIFIED !== 'true') issues.push('nemotron_voice_compatibility_unverified');
+  if (!fictionalLocalTest && env.VOICE_AGENT_COMPATIBILITY_VERIFIED !== 'true') issues.push(provider === 'assemblyai' ? 'managed_voice_compatibility_unverified' : 'nemotron_voice_compatibility_unverified');
   if (!fictionalLocalTest && !RECORDING_CONTROLS_VERIFIED) issues.push('provider_recording_controls_unverified');
   return issues;
 }

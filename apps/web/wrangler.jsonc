@@ -58,8 +58,7 @@
         "DAILY_AUDIO_MINUTES": "120",
         "FICTIONAL_LIVE_TEST": "false",
         "ALLOW_LOCAL_SANDBOX_ENROLLMENT": "false",
-        "ACCESS_ISSUER": "https://broken-fog-cde1.cloudflareaccess.com",
-        "ACCESS_AUDIENCE": "a3590fb8431d178849cd2ae6aba8e03c7cddd9d53398e0971b28e7cc8c14034a"
+        "PUBLIC_WORKSPACE_ACCESS": "true"
       },
       "d1_databases": [
         {
@@ -67,12 +66,6 @@
           "database_name": "nursebridge-staging",
           "database_id": "d7c0b657-f87e-4b62-9949-fbafb85ff08c",
           "migrations_dir": "../../packages/database/migrations"
-        }
-      ],
-      "r2_buckets": [
-        {
-          "binding": "EXPORTS",
-          "bucket_name": "nursebridge-exports-staging"
         }
       ],
       "durable_objects": {
@@ -92,7 +85,8 @@
       ],
       "account_id": "62694a02d05e9f529bba1664135adc2f",
       "workers_dev": true,
-      "preview_urls": false
+      "preview_urls": false,
+      "r2_buckets": []
     },
     "production": {
       "name": "nursebridge-web-production",

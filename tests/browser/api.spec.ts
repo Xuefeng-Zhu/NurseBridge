@@ -22,12 +22,21 @@ test('Workers HTTP preserves template versions, private exports, and terminal de
   expect((await admin.patch('/api/settings',{data:{recording:{enabled:false}}})).status()).toBe(400);
   const consentId=crypto.randomUUID();expect((await admin.post(`/api/calls/${call.id}/consent`,{data:{commandId:consentId,accepted:false}})).status()).toBe(200);
   expect((await admin.post(`/api/calls/${call.id}/consent`,{data:{commandId:consentId,accepted:true}})).status()).toBe(409);
-  const exported=await admin.post(`/api/calls/${call.id}/export`,{data:{format:'json',commandId:crypto.randomUUID()}});expect(exported.status()).toBe(201);const {url}=await exported.json();
-  const downloaded=await admin.get(url);expect(downloaded.status()).toBe(200);expect(downloaded.headers()['cache-control']).toBe('private, no-store');expect((await downloaded.json()).id).toBe(call.id);
-  expect((await stranger.get(url)).status()).toBe(404);
+  const exportPath=`/api/calls/${call.id}/export`;
+  const exported=await admin.post(exportPath,{data:{format:'json'}});
+  expect(exported.status()).toBe(200);
+  expect(exported.headers()['cache-control']).toBe('private, no-store');
+  expect(exported.headers()['content-disposition']).toBe(`attachment; filename="nursebridge-${call.id}.json"`);
+  expect(await exported.json()).toMatchObject({id:call.id,template:{version:1}});
+  const markdown=await admin.post(exportPath,{data:{format:'markdown'}});
+  expect(markdown.status()).toBe(200);expect(markdown.headers()['content-type']).toContain('text/markdown');
+  expect(await markdown.text()).toContain('# NurseBridge case');
+  expect((await stranger.post(exportPath,{data:{format:'json'}})).status()).toBe(404);
+  const legacy=await admin.get(`${exportPath}/${crypto.randomUUID()}`);
+  expect(legacy.status()).toBe(410);expect((await legacy.json()).error).toContain('Export the case again');
   expect((await admin.delete(`/api/calls/${call.id}`,{data:{commandId:crypto.randomUUID()}})).status()).toBe(200);
   expect((await admin.get(`/api/calls/${call.id}`)).status()).toBe(410);
-  expect((await admin.get(url)).status()).toBe(410);
+  expect((await admin.post(exportPath,{data:{format:'json'}})).status()).toBe(410);
   await expect.poll(async()=>{const result=await(await admin.get('/api/calls')).json();return result.calls.some((item:{id:string})=>item.id===call.id)}).toBe(false);
  }finally{await admin.dispose();await stranger.dispose()}
 });

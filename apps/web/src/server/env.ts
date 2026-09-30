@@ -25,24 +25,13 @@ export interface CallRpc {
         expiresAt: number;
         websocketPath: string;
     }>>;
-    reserveExport(input: {
-        workspaceId: string;
-        exportId: string;
-        key: string;
-        expiresAt: number;
-    }): Promise<RpcResult>;
-    finalizeExport(input: {
-        workspaceId: string;
-        exportId: string;
-        key: string;
-    }): Promise<RpcResult>;
+
 }
 export interface AppEnv {
     MAX_ACTIVE_CALLS_PER_WORKSPACE?: string;
     MAX_LIVE_CONCURRENCY?: string;
     DAILY_AUDIO_MINUTES?: string;
     DB: D1Database;
-    EXPORTS: R2Bucket;
     CALL_SESSIONS: DurableObjectNamespace;
     REALTIME: Fetcher;
     APP_ORIGIN: string;
@@ -50,6 +39,7 @@ export interface AppEnv {
     PROVIDER_MODE: Mode;
     ALLOW_TEST_DIAGNOSTICS?: string;
     ALLOW_LOCAL_SANDBOX_ENROLLMENT?: string;
+    PUBLIC_WORKSPACE_ACCESS?: string;
     TURNSTILE_SECRET_KEY?: string;
     TURNSTILE_SITE_KEY?: string;
     ACCESS_ISSUER?: string;

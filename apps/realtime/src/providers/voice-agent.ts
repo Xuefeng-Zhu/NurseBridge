@@ -5,7 +5,8 @@ export interface VoiceAgentTool {
   type: 'function'; name: string; description?: string; parameters: Record<string, unknown>;
   execution_mode?: 'interactive' | 'hold'; timeout_seconds?: number;
 }
-export interface VoiceAgentConfiguration { systemPrompt: string; tools: VoiceAgentTool[]; }
+export type VoiceAgentLLMProvider = 'nebius' | 'assemblyai';
+export interface VoiceAgentConfiguration { systemPrompt: string; tools: VoiceAgentTool[]; llmProvider?: VoiceAgentLLMProvider; }
 export interface VoiceAgentOptions extends VoiceAgentConfiguration { apiKey: string; agentId: string; }
 export type VoiceToolCall = { sessionId: string; replyId: string; callId: string; name: string; arguments: Record<string, unknown> };
 export type UnidentifiedSessionReason = 'connection_failed' | 'connection_timeout' | 'session_ended_without_id';
@@ -64,15 +65,21 @@ function normalizedTools(value: unknown): string {
 }
 function configuration(config: VoiceAgentConfiguration): VoiceAgentConfiguration {
   if (typeof config.systemPrompt !== 'string' || !config.systemPrompt.trim() || config.systemPrompt.length > 24000 || normalizedTools(config.tools).length > 32000) throw new Error('Invalid voice agent configuration');
-  return JSON.parse(JSON.stringify(config)) as VoiceAgentConfiguration;
+  const llmProvider = config.llmProvider ?? 'nebius';
+  if (llmProvider !== 'nebius' && llmProvider !== 'assemblyai') throw new Error('Invalid voice agent LLM provider');
+  return JSON.parse(JSON.stringify({ systemPrompt: config.systemPrompt, tools: config.tools, llmProvider })) as VoiceAgentConfiguration;
 }
-function verifiedAudioAndModel(config: unknown): config is ObjectValue {
+function verifiedAudioAndModel(config: unknown, llmProvider: VoiceAgentLLMProvider): config is ObjectValue {
   if (!object(config)) return false;
   for (const side of [config.input, config.output]) {
     if (!object(side) || !object(side.format) || side.format.encoding !== 'audio/pcm' || side.format.sample_rate !== 24000) return false;
   }
-  if (!Array.isArray(config.llm) || config.llm.length !== 1 || !object(config.llm[0])) return false;
-  return config.llm[0].model === VOICE_AGENT_MODEL && config.llm[0].base_url === VOICE_AGENT_LLM_BASE && !config.greeting;
+  if (!Array.isArray(config.llm) || config.greeting) return false;
+  // The stored-agent API represents its managed model with an explicit empty
+  // list. Missing/unknown configuration never silently selects another model.
+  if (llmProvider === 'assemblyai') return config.llm.length === 0;
+  if (config.llm.length !== 1 || !object(config.llm[0])) return false;
+  return config.llm[0].model === VOICE_AGENT_MODEL && config.llm[0].base_url === VOICE_AGENT_LLM_BASE;
 }
 
 /** Exported to exercise the exact production state machine with synthetic events. */
@@ -157,7 +164,13 @@ export class VoiceAgentProtocol implements VoiceAgent {
   }
   update(config: VoiceAgentConfiguration): boolean {
     if (!this.sessionId || this.stopped || this.closingBeforeIdentity || this.awaitingUpdate) return false;
-    try { this.expected = configuration(config); } catch { return false; }
+    try {
+      const next = configuration({ ...config, llmProvider: config.llmProvider ?? this.expected.llmProvider });
+      // LLM selection belongs to the stored agent and cannot change through a
+      // mutable prompt/tools update on an already established session.
+      if (next.llmProvider !== this.expected.llmProvider) return false;
+      this.expected = next;
+    } catch { return false; }
     this.ready = false; this.awaitingUpdate = true; this.interrupt(); this.armConfigurationTimeout();
     return this.write({ type: 'session.update', session: { system_prompt: this.expected.systemPrompt, tools: this.expected.tools } });
   }
@@ -178,7 +191,7 @@ export class VoiceAgentProtocol implements VoiceAgent {
       this.notify(() => this.callbacks.sessionCreated?.({ sessionId: this.sessionId! }));
       if (this.closingBeforeIdentity) { this.close(); return; }
       if (this.stopped) return;
-      if (!verifiedAudioAndModel(event.config)) { this.fail('provider_configuration_mismatch'); return; }
+      if (!verifiedAudioAndModel(event.config, this.expected.llmProvider ?? 'nebius')) { this.fail('provider_configuration_mismatch'); return; }
       this.update(this.expected); return;
     }
     if (this.closingBeforeIdentity) return;
@@ -187,10 +200,10 @@ export class VoiceAgentProtocol implements VoiceAgent {
       // provider creates a session ID. Verify it, but do not mistake it for
       // acknowledgement of our later, mutable prompt/tools update.
       if (!this.sessionId) {
-        if (this.awaitingUpdate || !verifiedAudioAndModel(event.config)) this.fail('provider_configuration_mismatch');
+        if (this.awaitingUpdate || !verifiedAudioAndModel(event.config, this.expected.llmProvider ?? 'nebius')) this.fail('provider_configuration_mismatch');
         return;
       }
-      if (!this.awaitingUpdate || !verifiedAudioAndModel(event.config)) { this.fail('provider_configuration_mismatch'); return; }
+      if (!this.awaitingUpdate || !verifiedAudioAndModel(event.config, this.expected.llmProvider ?? 'nebius')) { this.fail('provider_configuration_mismatch'); return; }
       if (event.config.system_prompt !== this.expected.systemPrompt || normalizedTools(event.config.tools) !== normalizedTools(this.expected.tools)) { this.fail('provider_configuration_mismatch'); return; }
       this.awaitingUpdate = false; this.ready = true; clearTimeout(this.configurationTimer ?? null);
       this.notify(() => this.callbacks.ready({ sessionId: this.sessionId! })); return;
