@@ -222,6 +222,19 @@ describe('Voice Agent collection and waiting in the Durable Object', () => {
     } finally { socket.close(); }
   });
 
+  it('keeps recording consent mandatory after explicit hosted browser activation', async () => {
+    const { stub } = await create();
+    const upstream = vi.spyOn(globalThis, 'fetch');
+    await runInDurableObject(stub, instance => {
+      const internal = instance as unknown as Internal;
+      internal.state.mode = 'live';
+      internal.env = { ...internal.env, PROVIDER_MODE: 'live', ASSEMBLYAI_API_KEY: 'fictional-key', NEBIUS_API_KEY: 'fictional-key', VOICE_AGENT_ID: 'agent-id', VOICE_AGENT_VERSION: 'v1', ALLOWED_ORIGINS: 'https://voice.example', BROWSER_LIVE_INTAKE_ORIGIN: 'https://voice.example' };
+      internal.checkpoint();
+    });
+    expect(await stub.command(command('consent', { accepted: true }))).toMatchObject({ ok: false, code: 'recording_consent_required' });
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it('keeps live intake gated when recording controls and recording consent are missing', async () => {
     const { stub } = await create();
     const upstream = vi.spyOn(globalThis, 'fetch');

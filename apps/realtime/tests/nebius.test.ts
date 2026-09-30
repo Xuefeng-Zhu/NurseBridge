@@ -1,3 +1,4 @@
+import { liveActivationIssues } from '../src/providers/readiness';
 import { describe, expect, it, vi } from 'vitest';
 import { extract, NebiusExtractionError, DEFAULT_EXTRACTION_MODEL, NEBIUS_CHAT_URL, type ProviderFetch } from '../src/providers/nebius';
 import { ExtractionError } from '../src/providers/chat-extraction';
@@ -265,5 +266,23 @@ describe('Voice Agent activation is separate from configured credentials', () =>
   it('does not treat the opt-in as active while the Worker is in mock mode', () => {
     const health = providerHealth({ ...configuredLive, PROVIDER_MODE: 'mock', FICTIONAL_LIVE_TEST: 'true' } as Env);
     expect(health.liveActivation).toMatchObject({ ready: false, issues: ['nemotron_voice_compatibility_unverified', 'provider_recording_controls_unverified'] });
+  });
+});
+
+
+describe('explicit hosted browser voice activation', () => {
+  const env = { PROVIDER_MODE: 'live', ASSEMBLYAI_API_KEY: 'test', NEBIUS_API_KEY: 'test', VOICE_AGENT_ID: 'agent-test', VOICE_AGENT_VERSION: 'v1', ALLOWED_ORIGINS: 'https://voice.example', BROWSER_LIVE_INTAKE_ORIGIN: 'https://voice.example' } as Env;
+  it('enables browser intake without certifying recording controls or clinical release', () => {
+    expect(providerHealth(env)).toMatchObject({ intakeConfigured: true, liveActivation: { ready: true, issues: [] }, clinicalReadiness: { ready: false }, recording: { retentionVerified: false, deletionVerified: false } });
+  });
+  it.each(['', 'https://voice.example/path', 'http://voice.example', 'https://other.example', 'https://voice.example,https://other.example'])('rejects origins outside the exact approved scope: %s', origin => {
+    expect(providerHealth({ ...env, ALLOWED_ORIGINS: origin }).liveActivation.ready).toBe(false);
+  });
+  it('still requires credentials and a versioned stored agent', () => {
+    expect(providerHealth({ ...env, ASSEMBLYAI_API_KEY: '', VOICE_AGENT_VERSION: '' }).liveActivation.issues).toEqual(['assemblyai_key_missing', 'versioned_agent_missing']);
+  });
+  it('does not enable telephone intake', () => {
+    expect(liveActivationIssues(env, 'phone')).toContain('provider_recording_controls_unverified');
+    expect(liveActivationIssues({ ...env, FICTIONAL_LIVE_TEST: 'true', ALLOWED_ORIGINS: 'http://localhost:8787' }, 'phone')).toContain('provider_recording_controls_unverified');
   });
 });

@@ -31,7 +31,7 @@ function xml(value: string) { return value.replace(/[&<>"']/g, character => ({ '
 function twiml(content: string) { return new Response(`<?xml version="1.0" encoding="UTF-8"?><Response>${content}</Response>`, { headers: { 'Content-Type': 'text/xml; charset=utf-8', 'Cache-Control': 'no-store' } }); }
 function hangup(message = 'This call is no longer available.') { return twiml(`<Say>${xml(message)}</Say><Hangup/>`); }
 function admitted(row: Receipt | null): row is Admitted { return Boolean(row?.call_id && row.workspace_id && row.caller_participant_id && row.template_json && row.expires_at && row.deadline_at && row.stream_token_expires_at); }
-function aiReady(env: Env) { return env.PROVIDER_MODE === 'live' && liveActivationIssues({ ...env, FICTIONAL_LIVE_TEST: undefined }).length === 0; }
+function aiReady(env: Env) { return env.PROVIDER_MODE === 'live' && liveActivationIssues(env, 'phone').length === 0; }
 async function receipt(env: Env, callSid: string): Promise<Receipt | null> { return env.DB.prepare("SELECT * FROM inbound_calls WHERE provider='twilio' AND account_sid=? AND provider_call_sid=?").bind(env.TWILIO_ACCOUNT_SID, callSid).first<Receipt>(); }
 
 function routes(env: Env): Record<string, string> {

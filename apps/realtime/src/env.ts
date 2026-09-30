@@ -17,6 +17,8 @@ export interface Env {
   VOICE_AGENT_VERSION?: string;
   VOICE_AGENT_COMPATIBILITY_VERIFIED?: string;
   FICTIONAL_LIVE_TEST?: string;
+  /** Explicit browser-only live activation for one HTTPS origin; not a retention certification. */
+  BROWSER_LIVE_INTAKE_ORIGIN?: string;
   PHONE_INBOUND_ENABLED?: string;
   TWILIO_ACCOUNT_SID?: string;
   TWILIO_AUTH_TOKEN?: string;

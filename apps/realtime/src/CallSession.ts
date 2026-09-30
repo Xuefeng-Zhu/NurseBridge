@@ -232,7 +232,7 @@ export class CallSession extends DurableObject<Env>{
    if(prior){if(prior.participant_id!==command.participantId||prior.request_hash!==requestHash)fail(409,'command_mismatch','Command ID was already used for a different request.');return JSON.parse(prior.body) as RpcResult;}
    const fixtureText=command.payload?.text;
    if(command.type==='mock-turn'&&(typeof fixtureText!=='string'||fixtureText.length>6000))fail(400,'invalid_fixture','A replay transcript within the size limit is required.');
-   if(command.type==='consent'&&command.payload?.accepted===true&&this.state!.mode==='live'&&liveActivationIssues(this.phone?{...this.env,FICTIONAL_LIVE_TEST:undefined}:this.env).length)fail(503,'live_activation_blocked','Voice Agent requires verified Nemotron compatibility and provider recording controls. Request a nurse instead.');
+   if(command.type==='consent'&&command.payload?.accepted===true&&this.state!.mode==='live'&&liveActivationIssues(this.env,this.phone?'phone':'browser').length)fail(503,'live_activation_blocked','Live intake is not enabled or its provider configuration is incomplete. Request a nurse instead.');
    const next=structuredClone(this.state!);
    this.ctx.storage.transactionSync(()=>{
     transition(next,command,Date.now());
@@ -525,7 +525,7 @@ export class CallSession extends DurableObject<Env>{
   if(Date.now()>=state.callDeadlineAt)return;
   if(this.phone&&state.mode!=='live'){this.waitForNurse('technical_failure','Automated phone intake requires live speech. Waiting for a nurse.');return;}
   if(state.mode==='live'){
-   if(liveActivationIssues(this.phone?{...this.env,FICTIONAL_LIVE_TEST:undefined}:this.env).length||!state.recordingConsent){this.providerFailure('live_activation_blocked');return;}
+   if(liveActivationIssues(this.env,this.phone?'phone':'browser').length||!state.recordingConsent){this.providerFailure('live_activation_blocked');return;}
    if(this.voice||this.connecting)return;
    this.connecting=true;const connectionId=++this.providerConnection;const attemptId=crypto.randomUUID();
    this.store.storage.sql.exec('INSERT INTO provider_connections(attempt_id,agent_id,started_at,status) VALUES(?,?,?,?)',attemptId,this.env.VOICE_AGENT_ID!,Date.now(),'connecting');

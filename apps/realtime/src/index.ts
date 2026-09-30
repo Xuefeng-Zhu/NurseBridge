@@ -17,6 +17,7 @@ export function providerHealth(env: Env) {
     configured: env.PROVIDER_MODE === 'mock' || voiceAgent && extraction,
     intakeConfigured: env.PROVIDER_MODE === 'mock' || activationIssues.length === 0,
     liveActivation: { ready: activationIssues.length === 0, issues: activationIssues },
+    clinicalReadiness: { ready: false, issues: ['clinical_release_unapproved', ...(!RECORDING_CONTROLS_VERIFIED ? ['provider_recording_controls_unverified'] : [])] },
     phoneInbound: { provider: 'twilio', enabled: env.PHONE_INBOUND_ENABLED === 'true', configured: Boolean(env.TWILIO_ACCOUNT_SID?.trim() && env.TWILIO_AUTH_TOKEN?.trim() && env.TWILIO_PUBLIC_ORIGIN?.trim() && env.TWILIO_INBOUND_ROUTES?.trim() && env.TWILIO_INBOUND_ROUTES !== '{}') },
     recording: { provider: 'assemblyai', enabled: env.PROVIDER_MODE === 'live', disclosureVersion: RECORDING_DISCLOSURE_VERSION, retentionVerified: RECORDING_CONTROLS_VERIFIED, deletionVerified: RECORDING_CONTROLS_VERIFIED },
     providers: {
