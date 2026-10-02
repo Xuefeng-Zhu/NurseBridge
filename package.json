@@ -34,7 +34,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.1.13",
     "@playwright/test": "1.60.0",
-    "@types/node": "24.10.0",
+    "@types/node": "26.6.3",
     "@types/ws": "8.18.1",
     "esbuild": "0.28.1",
     "eslint": "9.39.1",
